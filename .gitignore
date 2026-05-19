@@ -1,0 +1,58 @@
+# Local assistant/editor state
+.claude/
+
+# Local backups and snapshots
+backups/
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# HDL simulator build products
+xsim.dir/
+*.jou
+*.log
+*.pb
+*.wdb
+*.vcd
+*.xdbg
+*.rtti
+*.reloc
+*.svtype
+*.type
+*.dbg
+*.memdb
+webtalk*.log
+webtalk*.jou
+
+# SLURM / Xcelium run logs
+snn_mnist_*.log
+snn_mnist_v2_*.log
+
+# Generated simulation inputs/outputs
+sim/*.mem
+sim/*.vh
+sim/*.csv
+sim/*.log
+sim/run_*/
+sim/xsim.dir/
+sim/webtalk*/
+sim/xvlog.*
+sim/xelab.*
+sim/xsim.*
+sim/*.wdb
+sim/*.jou
+sim/*.vcd
+
+# Generated plots/data can be reproduced from simulation CSVs.
+# Keep curated result assets by adding them explicitly with `git add -f` if desired.
+results/*.png
+results/*.csv
+
+# OS files
+Thumbs.db
+.DS_Store
+
