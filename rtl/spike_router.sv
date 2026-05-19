@@ -60,12 +60,14 @@ module spike_router #(
     // =========================================================================
     // FIFO of spike events (source neuron ids)
     // =========================================================================
+    localparam int FIFO_COUNT_WIDTH = $clog2(FIFO_DEPTH) + 1;
+
     logic [ID_WIDTH-1:0] fifo_mem [0:FIFO_DEPTH-1];
     logic [$clog2(FIFO_DEPTH)-1:0] fifo_wr_ptr, fifo_rd_ptr;
-    logic [$clog2(FIFO_DEPTH):0]   fifo_count;
+    logic [FIFO_COUNT_WIDTH-1:0]   fifo_count;
 
     logic fifo_full, fifo_empty;
-    assign fifo_full      = (fifo_count == FIFO_DEPTH);
+    assign fifo_full      = (fifo_count == FIFO_COUNT_WIDTH'(FIFO_DEPTH));
     assign fifo_empty     = (fifo_count == 0);
     assign spike_in_ready = !fifo_full;
 

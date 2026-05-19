@@ -85,6 +85,10 @@ module top_ann #(
         hidden_mac = $signed({1'b0, hidden_act[idx]}) * weight;
     endfunction
 
+    function automatic logic signed [ACC_WIDTH-1:0] sext32(input logic signed [31:0] value);
+        sext32 = {{(ACC_WIDTH-32){value[31]}}, value};
+    endfunction
+
     function automatic logic [7:0] relu_quant(input logic signed [ACC_WIDTH-1:0] value);
         logic signed [ACC_WIDTH-1:0] shifted;
         begin
@@ -135,7 +139,7 @@ module top_ann #(
                 end
 
                 A_H_INIT: begin
-                    acc    <= b1[h_idx];
+                    acc    <= sext32(b1[h_idx]);
                     in_idx <= 0;
                     state  <= A_H_MAC;
                 end
@@ -161,7 +165,7 @@ module top_ann #(
                 end
 
                 A_O_INIT: begin
-                    acc    <= b2[o_idx];
+                    acc    <= sext32(b2[o_idx]);
                     h_idx  <= 0;
                     state  <= A_O_MAC;
                 end
@@ -200,4 +204,3 @@ module top_ann #(
     end
 
 endmodule
-
