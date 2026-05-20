@@ -2,6 +2,7 @@
 #include "verilated.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <vector>
 
 #ifndef SNN_N_INPUT
@@ -24,6 +26,7 @@ constexpr int N_INPUT = SNN_N_INPUT;
 constexpr int N_OUTPUT = SNN_N_OUTPUT;
 constexpr int PIXEL_WIDTH = 8;
 constexpr int N_WORDS = (N_INPUT * PIXEL_WIDTH + 31) / 32;
+using Clock = std::chrono::steady_clock;
 
 void tick(Vtop_ann& top) {
     top.clk = 0;
@@ -53,6 +56,46 @@ std::string parse_plusarg_string(int argc, char** argv, const std::string& name,
         }
     }
     return fallback;
+}
+
+std::string format_duration(double seconds) {
+    const int total = static_cast<int>(seconds + 0.5);
+    const int hours = total / 3600;
+    const int minutes = (total / 60) % 60;
+    const int secs = total % 60;
+    std::ostringstream out;
+    if (hours > 0) {
+        out << hours << "h";
+    }
+    if (hours > 0 || minutes > 0) {
+        out << minutes << "m";
+    }
+    out << secs << "s";
+    return out.str();
+}
+
+std::string progress_bar(int done, int total) {
+    constexpr int width = 30;
+    const int filled = std::max(0, std::min(width, (done * width) / std::max(total, 1)));
+    return "[" + std::string(filled, '#') + std::string(width - filled, '.') + "]";
+}
+
+void print_progress(int done, int total, int correct, Clock::time_point start) {
+    const auto now = Clock::now();
+    const double elapsed =
+        std::chrono::duration_cast<std::chrono::duration<double>>(now - start).count();
+    const double rate = done / std::max(elapsed, 1e-9);
+    const double eta = (total - done) / std::max(rate, 1e-9);
+    const double pct = 100.0 * done / std::max(total, 1);
+    const double acc = 100.0 * correct / std::max(done, 1);
+
+    std::cout << "  progress " << progress_bar(done, total)
+              << " " << std::setw(4) << done << "/" << total
+              << "  " << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%"
+              << "  acc=" << std::setprecision(2) << acc << "%"
+              << "  rate=" << std::setprecision(2) << rate << " img/s"
+              << "  elapsed=" << format_duration(elapsed)
+              << "  eta=" << format_duration(eta) << "\n";
 }
 
 std::vector<uint8_t> read_hex_bytes(const std::string& path) {
@@ -165,6 +208,9 @@ int main(int argc, char** argv) {
     std::cout << "  images " << first << ".." << last << "\n";
     std::cout << "==========================================================\n";
 
+    const auto run_start = Clock::now();
+    const int progress_interval = std::max(1, nrun / 20);
+
     for (int img = first; img <= last; ++img) {
         const int pred = classify(top, pixels, img, max_cycles);
         const int ok = (pred == labels[img]) ? 1 : 0;
@@ -176,6 +222,10 @@ int main(int argc, char** argv) {
         if (img - first < 12) {
             std::cout << "  image " << img << ": label=" << labels[img]
                       << " predict=" << pred << (ok ? "  OK" : "  x") << "\n";
+        }
+        const int done = img - first + 1;
+        if (done == nrun || (done >= 12 && done % progress_interval == 0)) {
+            print_progress(done, nrun, correct, run_start);
         }
     }
 

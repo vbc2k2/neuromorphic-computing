@@ -2,6 +2,7 @@
 #include "verilated.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <vector>
 
 #ifndef SNN_N_TOTAL
@@ -39,6 +41,7 @@ constexpr int ID_BIAS = SNN_ID_BIAS;
 constexpr int OUT_BASE = SNN_ID_OUTPUT_BASE;
 constexpr int T_STEPS = SNN_T_STEPS;
 constexpr int SPIKE_WORDS = (N_TOTAL + 31) / 32;
+using Clock = std::chrono::steady_clock;
 
 int parse_plusarg_int(int argc, char** argv, const std::string& name, int fallback) {
     const std::string prefix = "+" + name + "=";
@@ -61,6 +64,46 @@ std::string parse_plusarg_string(int argc, char** argv, const std::string& name,
         }
     }
     return fallback;
+}
+
+std::string format_duration(double seconds) {
+    const int total = static_cast<int>(seconds + 0.5);
+    const int hours = total / 3600;
+    const int minutes = (total / 60) % 60;
+    const int secs = total % 60;
+    std::ostringstream out;
+    if (hours > 0) {
+        out << hours << "h";
+    }
+    if (hours > 0 || minutes > 0) {
+        out << minutes << "m";
+    }
+    out << secs << "s";
+    return out.str();
+}
+
+std::string progress_bar(int done, int total) {
+    constexpr int width = 30;
+    const int filled = std::max(0, std::min(width, (done * width) / std::max(total, 1)));
+    return "[" + std::string(filled, '#') + std::string(width - filled, '.') + "]";
+}
+
+void print_progress(int done, int total, int correct, Clock::time_point start) {
+    const auto now = Clock::now();
+    const double elapsed =
+        std::chrono::duration_cast<std::chrono::duration<double>>(now - start).count();
+    const double rate = done / std::max(elapsed, 1e-9);
+    const double eta = (total - done) / std::max(rate, 1e-9);
+    const double pct = 100.0 * done / std::max(total, 1);
+    const double acc = 100.0 * correct / std::max(done, 1);
+
+    std::cout << "  progress " << progress_bar(done, total)
+              << " " << std::setw(4) << done << "/" << total
+              << "  " << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%"
+              << "  acc=" << std::setprecision(2) << acc << "%"
+              << "  rate=" << std::setprecision(2) << rate << " img/s"
+              << "  elapsed=" << format_duration(elapsed)
+              << "  eta=" << format_duration(eta) << "\n";
 }
 
 std::vector<std::string> read_spike_words(const std::string& path) {
@@ -239,6 +282,9 @@ int main(int argc, char** argv) {
     std::cout << "  images " << first << ".." << last << "\n";
     std::cout << "==========================================================\n";
 
+    const auto run_start = Clock::now();
+    const int progress_interval = std::max(1, nrun / 20);
+
     for (int img = first; img <= last; ++img) {
         const int pred = classify(top, spike_words, img, max_cycles);
         const int ok = (pred == labels[img]) ? 1 : 0;
@@ -253,6 +299,10 @@ int main(int argc, char** argv) {
         if (img - first < 12) {
             std::cout << "  image " << img << ": label=" << labels[img]
                       << " predict=" << pred << (ok ? "  OK" : "  x") << "\n";
+        }
+        const int done = img - first + 1;
+        if (done == nrun || (done >= 12 && done % progress_interval == 0)) {
+            print_progress(done, nrun, correct, run_start);
         }
     }
 
