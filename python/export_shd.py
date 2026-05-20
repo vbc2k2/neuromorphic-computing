@@ -35,7 +35,7 @@ torch.set_num_interop_threads(int(os.environ.get("SNN_TORCH_INTEROP_THREADS", "1
 
 
 N_INPUT = 700
-N_HIDDEN = int(os.environ.get("SHD_N_HIDDEN", "64"))
+N_HIDDEN = int(os.environ.get("SHD_N_HIDDEN", "96"))
 N_OUTPUT = 20
 N_TOTAL = N_INPUT + 1 + N_HIDDEN + N_OUTPUT
 
@@ -43,14 +43,14 @@ ID_BIAS = N_INPUT
 ID_HIDDEN_BASE = N_INPUT + 1
 ID_OUTPUT_BASE = N_INPUT + 1 + N_HIDDEN
 
-T_STEPS = int(os.environ.get("SHD_T_STEPS", "100"))
+T_STEPS = int(os.environ.get("SHD_T_STEPS", "25"))
 NUM_TRAIN = int(os.environ.get("SHD_NUM_TRAIN", "5000"))
 NUM_TEST_RTL = int(os.environ.get("SHD_NUM_TEST_RTL", "300"))
-EPOCHS = int(os.environ.get("SHD_EPOCHS", "18"))
+EPOCHS = int(os.environ.get("SHD_EPOCHS", "30"))
 BATCH_SIZE = int(os.environ.get("SHD_BATCH_SIZE", "128"))
-TOPK_W1 = int(os.environ.get("SHD_TOPK_W1", "32"))
+TOPK_W1 = int(os.environ.get("SHD_TOPK_W1", "48"))
 
-THR_RANGE = range(20, 800, 20)
+THR_RANGE = range(10, 700, 10)
 TUNE_SUBSET = int(os.environ.get("SHD_TUNE_SUBSET", "600"))
 EVAL_SUBSET = int(os.environ.get("SHD_EVAL_SUBSET", "600"))
 
@@ -190,16 +190,6 @@ def quantize_signed(weights: np.ndarray) -> np.ndarray:
     return np.clip(q, -127, 127).astype(np.int8)
 
 
-def choose_ann_hidden_shift(counts: np.ndarray, w1q: np.ndarray) -> int:
-    hidden = counts.astype(np.int32) @ w1q.T.astype(np.int32)
-    hidden = np.maximum(hidden, 0)
-    max_val = int(hidden.max()) if hidden.size else 0
-    shift = 0
-    while shift < 16 and (max_val >> shift) > 255:
-        shift += 1
-    return shift
-
-
 def simulate_ann_int(counts: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
                      w2q: np.ndarray, hidden_shift: int) -> float:
     h_raw = counts.astype(np.int32) @ w1q.T.astype(np.int32)
@@ -208,6 +198,16 @@ def simulate_ann_int(counts: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
     y = h @ w2q.T.astype(np.int32)
     pred = np.argmax(y, axis=1)
     return float((pred == labels).mean())
+
+
+def choose_ann_hidden_shift(counts: np.ndarray, labels: np.ndarray,
+                            w1q: np.ndarray, w2q: np.ndarray) -> int:
+    best_shift, best_acc = 0, -1.0
+    for shift in range(16):
+        acc = simulate_ann_int(counts, labels, w1q, w2q, shift)
+        if acc > best_acc:
+            best_shift, best_acc = shift, acc
+    return best_shift
 
 
 def lif_leak(mem: np.ndarray) -> np.ndarray:
@@ -347,7 +347,7 @@ def main():
     w1q = quantize_signed(w1_sparse)
     w2q = quantize_signed(w2)
 
-    hidden_shift = choose_ann_hidden_shift(train_counts, w1q)
+    hidden_shift = choose_ann_hidden_shift(train_counts, train_labels, w1q, w2q)
     ann_acc = simulate_ann_int(test_counts, test_labels, w1q, w2q, hidden_shift)
 
     tune_n = min(TUNE_SUBSET, len(train_labels))
@@ -369,6 +369,7 @@ def main():
     print("  SHD export complete")
     print(f"  float count MLP train/test accuracy: {train_acc * 100:.2f}% / {test_acc * 100:.2f}%")
     print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")
+    print(f"  sparse INT8 ANN hidden shift: {hidden_shift}")
     print(f"  sparse SNN threshold: {best_thr}")
     print(f"  sparse SNN eval accuracy ({eval_n} samples): {snn_acc * 100:.2f}%")
     print(f"  CSR synapses: {n_syn}")
