@@ -241,7 +241,33 @@ SLURM. The event SNN is expected to run much slower than the ANN on frame MNIST;
 that result is part of the point of v2 because it shows why sparse/event-native
 benchmarks are needed.
 
-## 9.9 Strong Final Claim To Aim For
+## 9.9 Sparse Event Microbenchmark
+
+MNIST is a dense frame benchmark. Rate coding it into 50 timesteps makes the
+SNN do too much work. To test the opposite case, the repo includes a controlled
+sparse-event benchmark:
+
+```bash
+python3 python/export_sparse_event.py
+bash tools/run_verilator_event.sh 0 299 _sparse
+bash tools/run_verilator_ann.sh 0 299 _sparse
+python3 python/merge_results_v2.py
+```
+
+This overwrites the files in `sim/` with sparse-event memories. To return to
+MNIST, rerun:
+
+```bash
+python3 python/train_snn.py
+```
+
+The sparse benchmark is not a public dataset result. It is a microbenchmark for
+the architectural claim: event-driven SNN execution can avoid work when the
+input stream and connectivity are genuinely sparse. A publishable version still
+needs a real event dataset such as N-MNIST, DVS Gesture, keyword spotting, or
+sensor anomaly detection.
+
+## 9.10 Strong Final Claim To Aim For
 
 Do not claim:
 

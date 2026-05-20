@@ -11,9 +11,17 @@
 #include <string>
 #include <vector>
 
+#ifndef SNN_N_INPUT
+#define SNN_N_INPUT 784
+#endif
+#ifndef SNN_N_OUTPUT
+#define SNN_N_OUTPUT 10
+#endif
+
 namespace {
 
-constexpr int N_INPUT = 784;
+constexpr int N_INPUT = SNN_N_INPUT;
+constexpr int N_OUTPUT = SNN_N_OUTPUT;
 constexpr int PIXEL_WIDTH = 8;
 constexpr int N_WORDS = (N_INPUT * PIXEL_WIDTH + 31) / 32;
 
@@ -194,4 +202,3 @@ int main(int argc, char** argv) {
     top.final();
     return 0;
 }
-

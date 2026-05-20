@@ -48,20 +48,34 @@ done
 
 echo "[verilator-ann$TAG] build  ($(date))"
 cd "$ROOT"
-HIDDEN_SHIFT="$(awk '/SNN_ANN_HIDDEN_SHIFT/ {print $3}' "$SIM/snn_config.vh")"
-if [ -z "$HIDDEN_SHIFT" ]; then
-    echo "ERROR: SNN_ANN_HIDDEN_SHIFT missing from $SIM/snn_config.vh" >&2
-    echo "Rerun python3 python/train_snn.py with the latest source." >&2
-    exit 1
-fi
+
+cfg() {
+    awk -v key="$1" '$2 == key { print $3 }' "$SIM/snn_config.vh"
+}
+
+N_INPUT="$(cfg SNN_N_INPUT)"
+N_HIDDEN="$(cfg SNN_N_HIDDEN)"
+N_OUTPUT="$(cfg SNN_N_OUTPUT)"
+HIDDEN_SHIFT="$(cfg SNN_ANN_HIDDEN_SHIFT)"
+
+for v in N_INPUT N_HIDDEN N_OUTPUT HIDDEN_SHIFT; do
+    if [ -z "${!v}" ]; then
+        echo "ERROR: $v missing from $SIM/snn_config.vh" >&2
+        echo "Rerun python3 python/train_snn.py with the latest source." >&2
+        exit 1
+    fi
+done
 
 verilator -sv --cc \
     --Mdir "$OBJDIR" \
+    -GN_INPUT="$N_INPUT" \
+    -GN_HIDDEN="$N_HIDDEN" \
+    -GN_OUTPUT="$N_OUTPUT" \
     -GHIDDEN_SHIFT="$HIDDEN_SHIFT" \
     "$RTL/top_ann.sv" \
     --top-module top_ann \
     --exe "$ROOT/tools/verilator_ann_main.cpp" \
-    -CFLAGS "-std=c++17"
+    -CFLAGS "-std=c++17 -DSNN_N_INPUT=$N_INPUT -DSNN_N_OUTPUT=$N_OUTPUT"
 make -C "$OBJDIR" -f Vtop_ann.mk -j "${VERILATOR_JOBS:-1}"
 
 echo "[verilator-ann$TAG] images $FIRST..$LAST  ($(date))"
