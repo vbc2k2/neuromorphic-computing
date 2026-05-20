@@ -43,7 +43,7 @@ N_TOTAL = N_INPUT + 1 + N_HIDDEN + N_OUTPUT
 THRESHOLD = 100
 LEAK = 1
 PIXEL_MAX = 255
-ANN_HIDDEN_SHIFT = 0
+ANN_HIDDEN_SHIFT = 4
 SEED = 7
 
 CLASS_POOL = 32
@@ -148,7 +148,8 @@ def simulate_snn(spikes: np.ndarray, labels: np.ndarray) -> float:
 def simulate_ann_counts(spikes: np.ndarray, labels: np.ndarray) -> float:
     w1, b1, w2, b2 = build_sparse_weights()
     counts = spikes.sum(axis=1).astype(np.int32)
-    h = np.maximum(0, counts @ w1.T.astype(np.int32) + b1)
+    h_raw = np.maximum(0, counts @ w1.T.astype(np.int32) + b1)
+    h = np.minimum(h_raw >> ANN_HIDDEN_SHIFT, 255).astype(np.int32)
     y = h @ w2.T.astype(np.int32) + b2
     pred = np.argmax(y, axis=1)
     return float((pred == labels).mean())
