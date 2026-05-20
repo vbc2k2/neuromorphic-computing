@@ -165,7 +165,51 @@ weight pruning
 7. Turn the accelerator into a memory-mapped peripheral.
 8. Attach it to a RISC-V SoC such as CVA6.
 
-## 9.8 Strong Final Claim To Aim For
+## 9.8 HPRC/Open-Source Simulation Strategy
+
+For open-source reproducibility, prefer this split:
+
+```text
+HPRC:
+  Python training/export sweeps
+  Verilator lint
+  future Verilator C++ harness runs
+
+TAMU Xcelium server:
+  reference RTL runs
+  compatibility checks against commercial simulation
+
+Vivado:
+  FPGA synthesis, utilization, timing, and estimated power
+```
+
+HPRC scratch is not backed up, so keep source on GitHub and regenerate large
+artifacts:
+
+```text
+data/mnist.npz
+sim/*.mem
+sim/*.csv
+obj_dir/
+```
+
+The MNIST loader in `python/train_snn.py` is TensorFlow-free. It downloads the
+same Keras MNIST `.npz` file directly with `urllib` and loads it with NumPy.
+This avoids TensorFlow/PyTorch native-library conflicts on HPC nodes.
+
+The script also defaults common CPU math thread variables to 1:
+
+```text
+OMP_NUM_THREADS
+MKL_NUM_THREADS
+OPENBLAS_NUM_THREADS
+NUMEXPR_NUM_THREADS
+```
+
+Override them only inside an allocated job when the scheduler grants more
+cores.
+
+## 9.9 Strong Final Claim To Aim For
 
 Do not claim:
 
@@ -181,4 +225,3 @@ reduce work and estimated energy versus dense SNN execution while remaining
 competitive with an INT8 ANN baseline under defined accuracy and latency
 constraints.
 ```
-

@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+data/*.npz
 
 # HDL simulator build products
 xsim.dir/
@@ -55,4 +56,3 @@ results/*.csv
 # OS files
 Thumbs.db
 .DS_Store
-

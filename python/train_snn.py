@@ -24,9 +24,21 @@ Author: Neuromorphic Accelerator Project
 """
 
 import os
+import urllib.request
+
+# Keep BLAS/OpenMP libraries polite on shared login/HPC nodes. Users can
+# override these before launching the script if a job allocation allows more.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import numpy as np
 import torch
 import torch.nn as nn
+
+torch.set_num_threads(int(os.environ.get("SNN_TORCH_THREADS", "1")))
+torch.set_num_interop_threads(int(os.environ.get("SNN_TORCH_INTEROP_THREADS", "1")))
 
 # ---------------------------------------------------------------------------
 # Benchmark selection
@@ -75,13 +87,30 @@ def load_dataset():
         Xtr, Xte, ytr, yte = train_test_split(
             X, y, test_size=0.25, random_state=SEED, stratify=y)
     else:
-        from tensorflow.keras.datasets import mnist
-        (Xtr, ytr), (Xte, yte) = mnist.load_data()
+        Xtr, ytr, Xte, yte = load_mnist_npz()
         Xtr = Xtr.reshape(-1, 784).astype(np.int32)
         Xte = Xte.reshape(-1, 784).astype(np.int32)
         ytr = ytr.astype(np.int64)
         yte = yte.astype(np.int64)
     return Xtr, ytr, Xte, yte
+
+
+def load_mnist_npz():
+    """Load MNIST without TensorFlow, for portable HPC/open-source runs."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, '..'))
+    data_dir = os.environ.get("SNN_DATA_DIR", os.path.join(repo_root, 'data'))
+    os.makedirs(data_dir, exist_ok=True)
+
+    env_path = os.environ.get("MNIST_NPZ")
+    path = env_path if env_path else os.path.join(data_dir, 'mnist.npz')
+    if not os.path.exists(path):
+        url = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
+        print(f"  Downloading MNIST to {path}")
+        urllib.request.urlretrieve(url, path)
+
+    with np.load(path) as data:
+        return data['x_train'], data['y_train'], data['x_test'], data['y_test']
 
 
 # ---------------------------------------------------------------------------
