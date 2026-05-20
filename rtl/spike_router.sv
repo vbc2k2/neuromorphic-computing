@@ -83,29 +83,31 @@ module spike_router #(
     // =========================================================================
     // Fan-out FSM — walk the current source's CSR synapse list
     // =========================================================================
-    typedef enum logic [2:0] {
+    typedef enum logic [1:0] {
         IDLE,
         DEQUEUE,        // pop a source id; CSR pointer becomes valid next cycle
         CHECK,          // base/len ready; skip sources with no fan-out
-        READ_SYN,       // issue a CSR synapse read
-        WAIT_SYN,       // wait for CSR latency
-        DELIVER,        // drive (dst, weight) to the neuron array
-        NEXT_SYN        // advance to the next synapse
+        STREAM          // pipelined read/deliver of all fan-out synapses
     } state_t;
 
     state_t state, state_next;
     logic [ID_WIDTH-1:0]  current_src;
-    logic [IDX_WIDTH-1:0] walk_idx;
-    logic                 last_syn;
+    logic [IDX_WIDTH-1:0] issue_idx;
+    logic [IDX_WIDTH-1:0] deliver_idx;
+    logic                 issue_valid;
+    logic                 delivery_valid;
+    logic                 last_delivery;
 
-    assign last_syn = (walk_idx + 1 == csr_ptr_len);
+    assign issue_valid    = (state == STREAM) && (issue_idx < csr_ptr_len);
+    assign delivery_valid = (state == STREAM) && csr_syn_valid;
+    assign last_delivery  = delivery_valid && (deliver_idx + IDX_WIDTH'(1) == csr_ptr_len);
     assign busy     = (state != IDLE);
     assign idle     = (state == IDLE) && fifo_empty;
 
     // CSR pointer is looked up for the source currently being processed
     assign csr_ptr_src   = current_src;
-    assign csr_syn_index = csr_ptr_base + walk_idx;
-    assign csr_syn_rd_en = (state == READ_SYN);
+    assign csr_syn_index = csr_ptr_base + issue_idx;
+    assign csr_syn_rd_en = issue_valid;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n)
@@ -119,11 +121,8 @@ module spike_router #(
         case (state)
             IDLE:     if (!fifo_empty) state_next = DEQUEUE;
             DEQUEUE:  state_next = CHECK;
-            CHECK:    state_next = (csr_ptr_len == 0) ? IDLE : READ_SYN;
-            READ_SYN: state_next = WAIT_SYN;
-            WAIT_SYN: if (csr_syn_valid) state_next = DELIVER;
-            DELIVER:  state_next = NEXT_SYN;
-            NEXT_SYN: state_next = last_syn ? IDLE : READ_SYN;
+            CHECK:    state_next = (csr_ptr_len == 0) ? IDLE : STREAM;
+            STREAM:   if (last_delivery) state_next = IDLE;
             default:  state_next = IDLE;
         endcase
     end
@@ -131,7 +130,8 @@ module spike_router #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             current_src      <= '0;
-            walk_idx         <= '0;
+            issue_idx        <= '0;
+            deliver_idx      <= '0;
             fifo_rd_ptr      <= '0;
             fifo_count       <= '0;
             total_events     <= '0;
@@ -148,24 +148,26 @@ module spike_router #(
                 DEQUEUE: begin
                     current_src  <= fifo_mem[fifo_rd_ptr];
                     fifo_rd_ptr  <= fifo_rd_ptr + 1;
-                    walk_idx     <= '0;
+                    issue_idx    <= '0;
+                    deliver_idx  <= '0;
                     total_events <= total_events + 1;
                 end
-                DELIVER: begin
-                    total_deliveries <= total_deliveries + 1;
-                end
-                NEXT_SYN: begin
-                    if (!last_syn)
-                        walk_idx <= walk_idx + 1;
+                STREAM: begin
+                    if (issue_valid)
+                        issue_idx <= issue_idx + 1;
+                    if (delivery_valid) begin
+                        deliver_idx      <= deliver_idx + 1;
+                        total_deliveries <= total_deliveries + 1;
+                    end
                 end
                 default: ;
             endcase
         end
     end
 
-    // Delivery outputs — one synapse per DELIVER cycle
+    // Delivery outputs - one synapse per cycle after the first CSR latency
     assign deliver_dst_id = csr_syn_dst;
     assign deliver_weight = csr_syn_weight;
-    assign deliver_valid  = (state == DELIVER);
+    assign deliver_valid  = delivery_valid;
 
 endmodule

@@ -106,6 +106,25 @@ def parse_config() -> Dict[str, str]:
     return cfg
 
 
+def cfg_int(cfg: Dict[str, str], key: str, fallback: int = 0) -> int:
+    try:
+        return int(cfg.get(key, fallback))
+    except ValueError:
+        return fallback
+
+
+def dense_ann_weight_count(cfg: Dict[str, str]) -> int:
+    direct = cfg_int(cfg, "SNN_ANN_NUM_MACS")
+    if direct > 0:
+        return direct
+    n_input = cfg_int(cfg, "SNN_N_INPUT")
+    n_hidden = cfg_int(cfg, "SNN_N_HIDDEN")
+    n_output = cfg_int(cfg, "SNN_N_OUTPUT")
+    if n_input > 0 and n_hidden > 0 and n_output > 0:
+        return n_input * n_hidden + n_hidden * n_output
+    return 0
+
+
 def require_bench(name: str) -> Bench:
     try:
         return BENCHES[name]
@@ -263,6 +282,7 @@ def command_summarize(args: argparse.Namespace) -> None:
     rows = summarize_rows(tag)
     if not rows:
         raise SystemExit(f"No metrics found for tag '{tag}' in sim/")
+    cfg = parse_config()
 
     print("=" * 78)
     print(f"Benchmark summary tag={tag}")
@@ -287,6 +307,21 @@ def command_summarize(args: argparse.Namespace) -> None:
         print("-" * 78)
         print(f"ANN/Event active-cycle ratio: {ann_active / ev_active:.2f}x")
         print(f"ANN/Event op ratio:           {ann_ops / ev_ops:.2f}x")
+        sparse_weights = cfg_int(cfg, "SNN_NUM_SYN")
+        dense_weights = dense_ann_weight_count(cfg)
+        if sparse_weights > 0 and dense_weights > 0:
+            print(
+                f"Dense/SNN weight-storage ratio: {dense_weights / sparse_weights:.2f}x "
+                f"({dense_weights:,} dense weights vs {sparse_weights:,} CSR synapses)"
+            )
+
+        # First-order proxy only: a real claim still needs synthesis plus activity.
+        # It is useful because edge energy is usually dominated by memory traffic
+        # and MAC count, not by Verilator wall-clock runtime.
+        equal_cost_ratio = ann_ops / ev_ops
+        mac_weighted_ratio = (ann_ops * 3.0) / ev_ops
+        print(f"Equal-cost work proxy ratio:   {equal_cost_ratio:.2f}x")
+        print(f"3x-MAC work proxy ratio:       {mac_weighted_ratio:.2f}x")
     print("=" * 78)
 
 
