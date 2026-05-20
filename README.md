@@ -73,6 +73,32 @@ work* differs:
 
 ## Quick Start
 
+### Unified benchmark CLI
+
+For the current v2 flow, use the benchmark helper instead of manually
+remembering each export/run command:
+
+```bash
+source tools/env_hprc.sh          # HPRC: conda + Verilator PATH helper
+python3 tools/bench.py doctor    # check Python deps, Verilator, current sim config
+python3 tools/bench.py list      # show available benchmarks
+
+python3 tools/bench.py all sparse
+python3 tools/bench.py all nmnist
+```
+
+Step-by-step:
+
+```bash
+python3 tools/bench.py export nmnist
+python3 tools/bench.py run nmnist --design event --last 49
+python3 tools/bench.py run nmnist --design ann --last 49
+python3 tools/bench.py summarize nmnist
+```
+
+See [`tools/README.md`](tools/README.md) for tuning options and benchmark
+targets.
+
 ### Phase 1 — digits, locally (Vivado xsim)
 ```batch
 REM python/train_snn.py must have DATASET = 'digits'
