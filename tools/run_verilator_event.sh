@@ -69,6 +69,8 @@ for v in N_TOTAL N_INPUT N_OUTPUT ID_BIAS OUT_BASE T_STEPS THRESHOLD LEAK NUM_SY
     fi
 done
 
+cp -f "$SIM/snn_config.vh" "$SIM/snn_config${TAG}.vh"
+
 echo "[verilator-event$TAG] build  ($(date))"
 cd "$ROOT"
 

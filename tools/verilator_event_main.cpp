@@ -309,6 +309,8 @@ int main(int argc, char** argv) {
     std::ofstream metrics_csv("metrics_classify_event" + tag + ".csv");
     metrics_csv << "metric,value\n";
     metrics_csv << "design,event_driven_verilator\n";
+    metrics_csv << "first_image," << first << "\n";
+    metrics_csv << "last_image," << last << "\n";
     metrics_csv << "num_images," << nrun << "\n";
     metrics_csv << "correct," << correct << "\n";
     metrics_csv << "accuracy_pct," << std::fixed << std::setprecision(2)

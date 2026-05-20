@@ -91,8 +91,8 @@ def parse_key_values(values: Iterable[str]) -> dict:
     return env
 
 
-def parse_config() -> Dict[str, str]:
-    path = SIM / "snn_config.vh"
+def parse_config(path: Optional[Path] = None) -> Dict[str, str]:
+    path = path or (SIM / "snn_config.vh")
     cfg: Dict[str, str] = {}
     if not path.exists():
         return cfg
@@ -161,6 +161,17 @@ def read_metrics(path: Path) -> Dict[str, object]:
 
 def metric_path(design: str, tag: str) -> Path:
     return SIM / f"metrics_classify_{design}{tag}.csv"
+
+
+def config_snapshot_path(tag: str) -> Path:
+    return SIM / f"snn_config{tag or '_default'}.vh"
+
+
+def config_for_tag(tag: str) -> tuple[Dict[str, str], str]:
+    snapshot = config_snapshot_path(tag)
+    if snapshot.exists():
+        return parse_config(snapshot), snapshot.name
+    return parse_config(), "snn_config.vh"
 
 
 def current_dataset() -> str:
@@ -249,6 +260,7 @@ def command_run(args: argparse.Namespace) -> None:
     else:
         last = args.last
     tag = args.tag or bench.default_tag
+    config_snapshot_path(tag).write_text((SIM / "snn_config.vh").read_text())
 
     designs = ["event", "ann"] if args.design == "all" else [args.design]
     for design in designs:
@@ -282,10 +294,18 @@ def command_summarize(args: argparse.Namespace) -> None:
     rows = summarize_rows(tag)
     if not rows:
         raise SystemExit(f"No metrics found for tag '{tag}' in sim/")
-    cfg = parse_config()
+    cfg, cfg_source = config_for_tag(tag)
+    if bench and cfg.get("SNN_DATASET") and cfg.get("SNN_DATASET") != bench.dataset_id:
+        raise SystemExit(
+            f"tag '{tag}' uses dataset '{cfg.get('SNN_DATASET')}', not "
+            f"'{bench.dataset_id}'. Use the matching benchmark/tag."
+        )
 
     print("=" * 78)
     print(f"Benchmark summary tag={tag}")
+    print(f"Config source: {cfg_source}")
+    if cfg.get("SNN_DATASET"):
+        print(f"Dataset: {cfg.get('SNN_DATASET')}")
     print("=" * 78)
     for design, metrics in rows:
         ops = metrics.get("mac_ops", metrics.get("synapse_ops", 0))
@@ -300,6 +320,24 @@ def command_summarize(args: argparse.Namespace) -> None:
     if "event" in lookup and "ann" in lookup:
         event = lookup["event"]
         ann = lookup["ann"]
+        if int(event.get("num_images", 0)) != int(ann.get("num_images", 0)):
+            raise SystemExit(
+                "Refusing ratio: event and ANN runs used different image counts "
+                f"({event.get('num_images')} vs {ann.get('num_images')})."
+            )
+        if (
+            "first_image" in event
+            and "first_image" in ann
+            and (
+                int(event.get("first_image", -1)) != int(ann.get("first_image", -2))
+                or int(event.get("last_image", -1)) != int(ann.get("last_image", -2))
+            )
+        ):
+            raise SystemExit(
+                "Refusing ratio: event and ANN runs used different image ranges "
+                f"({event.get('first_image')}..{event.get('last_image')} vs "
+                f"{ann.get('first_image')}..{ann.get('last_image')})."
+            )
         ev_active = max(int(event.get("active_cycles", 0)), 1)
         ev_ops = max(int(event.get("synapse_ops", 0)), 1)
         ann_active = int(ann.get("active_cycles", 0))

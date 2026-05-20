@@ -66,6 +66,8 @@ for v in N_INPUT N_HIDDEN N_OUTPUT HIDDEN_SHIFT; do
     fi
 done
 
+cp -f "$SIM/snn_config.vh" "$SIM/snn_config${TAG}.vh"
+
 verilator -sv --cc \
     --Mdir "$OBJDIR" \
     -GN_INPUT="$N_INPUT" \
