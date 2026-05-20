@@ -221,16 +221,25 @@ Run a fast INT8 ANN smoke test:
 bash tools/run_verilator_ann.sh 0 4 _smoke
 ```
 
+Run a fast event-driven SNN smoke test:
+
+```bash
+bash tools/run_verilator_event.sh 0 4 _smoke
+```
+
 That produces:
 
 ```text
 sim/classify_ann_smoke.csv
 sim/metrics_classify_ann_smoke.csv
+sim/classify_event_smoke.csv
+sim/metrics_classify_event_smoke.csv
 ```
 
-This is the first open-source simulation path. The event-driven SNN path is
-still validated with Xcelium for now; a faster Verilator event harness is a
-future v2 task.
+For longer HPRC runs, keep `VERILATOR_JOBS` within the core count granted by
+SLURM. The event SNN is expected to run much slower than the ANN on frame MNIST;
+that result is part of the point of v2 because it shows why sparse/event-native
+benchmarks are needed.
 
 ## 9.9 Strong Final Claim To Aim For
 

@@ -1,0 +1,284 @@
+#include "Vtop.h"
+#include "verilated.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#ifndef SNN_N_TOTAL
+#error "SNN_N_TOTAL must be passed with -DSNN_N_TOTAL=<value>"
+#endif
+#ifndef SNN_N_INPUT
+#error "SNN_N_INPUT must be passed with -DSNN_N_INPUT=<value>"
+#endif
+#ifndef SNN_N_OUTPUT
+#error "SNN_N_OUTPUT must be passed with -DSNN_N_OUTPUT=<value>"
+#endif
+#ifndef SNN_ID_BIAS
+#error "SNN_ID_BIAS must be passed with -DSNN_ID_BIAS=<value>"
+#endif
+#ifndef SNN_ID_OUTPUT_BASE
+#error "SNN_ID_OUTPUT_BASE must be passed with -DSNN_ID_OUTPUT_BASE=<value>"
+#endif
+#ifndef SNN_T_STEPS
+#error "SNN_T_STEPS must be passed with -DSNN_T_STEPS=<value>"
+#endif
+
+namespace {
+
+constexpr int N_TOTAL = SNN_N_TOTAL;
+constexpr int N_INPUT = SNN_N_INPUT;
+constexpr int N_OUTPUT = SNN_N_OUTPUT;
+constexpr int ID_BIAS = SNN_ID_BIAS;
+constexpr int OUT_BASE = SNN_ID_OUTPUT_BASE;
+constexpr int T_STEPS = SNN_T_STEPS;
+constexpr int SPIKE_WORDS = (N_TOTAL + 31) / 32;
+
+int parse_plusarg_int(int argc, char** argv, const std::string& name, int fallback) {
+    const std::string prefix = "+" + name + "=";
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg.rfind(prefix, 0) == 0) {
+            return std::stoi(arg.substr(prefix.size()));
+        }
+    }
+    return fallback;
+}
+
+std::string parse_plusarg_string(int argc, char** argv, const std::string& name,
+                                 const std::string& fallback) {
+    const std::string prefix = "+" + name + "=";
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg.rfind(prefix, 0) == 0) {
+            return arg.substr(prefix.size());
+        }
+    }
+    return fallback;
+}
+
+std::vector<std::string> read_spike_words(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("cannot open " + path);
+    }
+    std::vector<std::string> words;
+    std::string token;
+    while (in >> token) {
+        if (static_cast<int>(token.size()) != N_INPUT) {
+            throw std::runtime_error(path + " contains a spike word with wrong width");
+        }
+        words.push_back(token);
+    }
+    return words;
+}
+
+std::vector<int> read_labels(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("cannot open " + path);
+    }
+    std::vector<int> labels;
+    std::string token;
+    while (in >> token) {
+        labels.push_back(static_cast<int>(std::stoul(token, nullptr, 16) & 0xf));
+    }
+    return labels;
+}
+
+bool spike_word_bit(const std::string& word, int pixel) {
+    // Verilog $readmemb maps the rightmost character to bit 0.
+    return word[N_INPUT - 1 - pixel] == '1';
+}
+
+bool output_spike_bit(const Vtop& top, int neuron_id) {
+    return ((top.neuron_spikes[neuron_id / 32] >> (neuron_id % 32)) & 1U) != 0;
+}
+
+void count_output_spikes(const Vtop& top, std::vector<int>& out_count) {
+    for (int o = 0; o < N_OUTPUT; ++o) {
+        if (output_spike_bit(top, OUT_BASE + o)) {
+            ++out_count[o];
+        }
+    }
+}
+
+void tick(Vtop& top, std::vector<int>* out_count = nullptr) {
+    top.clk = 0;
+    top.eval();
+    top.clk = 1;
+    top.eval();
+    if (out_count != nullptr) {
+        count_output_spikes(top, *out_count);
+    }
+}
+
+void reset(Vtop& top) {
+    top.rst_n = 0;
+    top.ext_spike_id = 0;
+    top.ext_spike_valid = 0;
+    top.start_step = 0;
+    for (int i = 0; i < 4; ++i) tick(top);
+    top.rst_n = 1;
+    for (int i = 0; i < 2; ++i) tick(top);
+}
+
+void inject_spike(Vtop& top, int neuron_id, std::vector<int>& out_count, int& cycles) {
+    top.ext_spike_id = neuron_id;
+    top.ext_spike_valid = 1;
+    tick(top, &out_count);
+    ++cycles;
+    top.ext_spike_valid = 0;
+    tick(top, &out_count);
+    ++cycles;
+}
+
+void run_step(Vtop& top, std::vector<int>& out_count, int& cycles,
+              int max_cycles_per_image, int image_index) {
+    top.start_step = 1;
+    tick(top, &out_count);
+    ++cycles;
+    top.start_step = 0;
+
+    while (!top.step_busy) {
+        if (++cycles > max_cycles_per_image) {
+            throw std::runtime_error("timeout waiting for step start on image " +
+                                     std::to_string(image_index));
+        }
+        tick(top, &out_count);
+    }
+
+    while (top.step_busy) {
+        if (++cycles > max_cycles_per_image) {
+            throw std::runtime_error("timeout while classifying image " +
+                                     std::to_string(image_index));
+        }
+        tick(top, &out_count);
+    }
+
+    tick(top, &out_count);
+    ++cycles;
+}
+
+int argmax_first(const std::vector<int>& values) {
+    int best_idx = 0;
+    int best = values[0];
+    for (int i = 1; i < static_cast<int>(values.size()); ++i) {
+        if (values[i] > best) {
+            best = values[i];
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
+int classify(Vtop& top, const std::vector<std::string>& spike_words, int image_index,
+             int max_cycles_per_image) {
+    reset(top);
+    std::vector<int> out_count(N_OUTPUT, 0);
+    int cycles = 0;
+
+    for (int t = 0; t < T_STEPS; ++t) {
+        const std::string& word = spike_words[image_index * T_STEPS + t];
+        for (int p = 0; p < N_INPUT; ++p) {
+            if (spike_word_bit(word, p)) {
+                inject_spike(top, p, out_count, cycles);
+            }
+        }
+        inject_spike(top, ID_BIAS, out_count, cycles);
+        run_step(top, out_count, cycles, max_cycles_per_image, image_index);
+    }
+
+    tick(top);
+    return argmax_first(out_count);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+
+    const int first = parse_plusarg_int(argc, argv, "first", 0);
+    int last = parse_plusarg_int(argc, argv, "last", 4);
+    const std::string tag = parse_plusarg_string(argc, argv, "tag", "_vl");
+    const int max_cycles = parse_plusarg_int(argc, argv, "max_cycles", 50000000);
+
+    const auto spike_words = read_spike_words("snn_spikes.mem");
+    const auto labels = read_labels("snn_labels.mem");
+    const int num_images = static_cast<int>(labels.size());
+    if (spike_words.size() != static_cast<size_t>(num_images * T_STEPS)) {
+        throw std::runtime_error("snn_spikes.mem size does not match labels/timesteps");
+    }
+    last = std::min(last, num_images - 1);
+    const int nrun = last - first + 1;
+    if (first < 0 || nrun <= 0) {
+        throw std::runtime_error("invalid image range");
+    }
+
+    std::ofstream classify_csv("classify_event" + tag + ".csv");
+    classify_csv << "image,label,prediction,correct,active_cycles,deliveries,spikes\n";
+
+    Vtop top;
+    reset(top);
+
+    long long total_active = 0;
+    long long total_deliveries = 0;
+    long long total_events = 0;
+    long long total_spikes = 0;
+    int correct = 0;
+
+    std::cout << "==========================================================\n";
+    std::cout << "  Verilator Event-Driven SNN Accelerator\n";
+    std::cout << "  " << N_TOTAL << " neurons, " << T_STEPS << " timesteps/image\n";
+    std::cout << "  images " << first << ".." << last << "\n";
+    std::cout << "==========================================================\n";
+
+    for (int img = first; img <= last; ++img) {
+        const int pred = classify(top, spike_words, img, max_cycles);
+        const int ok = (pred == labels[img]) ? 1 : 0;
+        correct += ok;
+        total_active += static_cast<long long>(top.active_cycles);
+        total_deliveries += static_cast<long long>(top.router_deliveries);
+        total_events += static_cast<long long>(top.router_events);
+        total_spikes += static_cast<long long>(top.total_spikes_fired);
+        classify_csv << img << "," << labels[img] << "," << pred << "," << ok
+                     << "," << top.active_cycles << "," << top.router_deliveries
+                     << "," << top.total_spikes_fired << "\n";
+        if (img - first < 12) {
+            std::cout << "  image " << img << ": label=" << labels[img]
+                      << " predict=" << pred << (ok ? "  OK" : "  x") << "\n";
+        }
+    }
+
+    std::ofstream metrics_csv("metrics_classify_event" + tag + ".csv");
+    metrics_csv << "metric,value\n";
+    metrics_csv << "design,event_driven_verilator\n";
+    metrics_csv << "num_images," << nrun << "\n";
+    metrics_csv << "correct," << correct << "\n";
+    metrics_csv << "accuracy_pct," << std::fixed << std::setprecision(2)
+                << (100.0 * correct / std::max(nrun, 1)) << "\n";
+    metrics_csv << "active_cycles," << total_active << "\n";
+    metrics_csv << "synapse_ops," << total_deliveries << "\n";
+    metrics_csv << "router_events," << total_events << "\n";
+    metrics_csv << "spikes_fired," << total_spikes << "\n";
+
+    std::cout << "\n==========================================================\n";
+    std::cout << "  Classification accuracy: " << correct << " / " << nrun
+              << " = " << std::fixed << std::setprecision(2)
+              << (100.0 * correct / std::max(nrun, 1)) << "%\n";
+    std::cout << "  Event-driven work:\n";
+    std::cout << "    Active cycles:       " << total_active << "\n";
+    std::cout << "    Synapse deliveries:  " << total_deliveries << "\n";
+    std::cout << "    Router events:       " << total_events << "\n";
+    std::cout << "    Spikes fired:        " << total_spikes << "\n";
+    std::cout << "==========================================================\n";
+
+    top.final();
+    return 0;
+}
