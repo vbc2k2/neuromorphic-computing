@@ -295,7 +295,25 @@ RTL format. Treat the result as the first hardware-sparsity probe on public
 data. If accuracy and work reduction look good, the next step is a stronger
 temporal model rather than only count features.
 
-## 9.11 Strong Final Claim To Aim For
+## 9.11 N-MNIST Public Event-Vision Benchmark
+
+If SHD is too hard for the current count-based model, N-MNIST is the next public
+benchmark to try. It is event-camera digit data, so it is easier than SHD while
+still being a public event-stream dataset.
+
+```bash
+python3 -m pip install tonic
+python3 python/export_nmnist.py
+bash tools/run_verilator_event.sh 0 299 _nmnist
+bash tools/run_verilator_ann.sh 0 299 _nmnist
+cat sim/metrics_classify_event_nmnist.csv
+cat sim/metrics_classify_ann_nmnist.csv
+```
+
+As with SHD, inspect the export accuracies first. Do not spend RTL time if the
+export reports poor sparse INT8 ANN or sparse SNN accuracy.
+
+## 9.12 Strong Final Claim To Aim For
 
 Do not claim:
 
