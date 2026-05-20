@@ -197,10 +197,10 @@ module tb_classify;
         for (int img = run_first; img <= run_last; img++) begin
             classify(img, pred);
             if (pred == int'(label_mem[img])) correct++;
-            tot_active += active_cycles;
-            tot_deliv  += router_deliveries;
-            tot_events += router_events;
-            tot_spikes += total_spikes_fired;
+            tot_active += longint'(active_cycles);
+            tot_deliv  += longint'(router_deliveries);
+            tot_events += longint'(router_events);
+            tot_spikes += longint'(total_spikes_fired);
             $fwrite(result_log, "%0d,%0d,%0d,%0d,%0d,%0d,%0d\n",
                     img, label_mem[img], pred,
                     (pred == int'(label_mem[img])) ? 1 : 0,
@@ -247,7 +247,9 @@ module tb_classify;
         longint unsigned timeout_ns;
         if (!$value$plusargs("timeout_ns=%d", timeout_ns))
             timeout_ns = 64'd120_000_000_000;
+        /* verilator lint_off ZERODLY */
         #(timeout_ns);
+        /* verilator lint_on ZERODLY */
         $display("[TIMEOUT] Simulation exceeded time limit (%0d ns)", timeout_ns);
         $finish;
     end
