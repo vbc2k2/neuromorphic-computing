@@ -20,13 +20,11 @@ set -euo pipefail
 FIRST="${1:-0}"
 LAST="${2:-4}"
 TAG="${3:-_vl}"
-TIMEOUT_NS="${SNN_TIMEOUT_NS:-120000000000}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 SIM="$ROOT/sim"
 RTL="$ROOT/rtl"
-TB="$ROOT/tb"
 RUNDIR="$SIM/run_verilator_ann${TAG}"
 OBJDIR="$RUNDIR/obj_dir"
 
@@ -50,18 +48,27 @@ done
 
 echo "[verilator-ann$TAG] build  ($(date))"
 cd "$ROOT"
-verilator -sv --timing --binary \
-    "-I$SIM" \
+HIDDEN_SHIFT="$(awk '/SNN_ANN_HIDDEN_SHIFT/ {print $3}' "$SIM/snn_config.vh")"
+if [ -z "$HIDDEN_SHIFT" ]; then
+    echo "ERROR: SNN_ANN_HIDDEN_SHIFT missing from $SIM/snn_config.vh" >&2
+    echo "Rerun python3 python/train_snn.py with the latest source." >&2
+    exit 1
+fi
+
+verilator -sv --cc \
     --Mdir "$OBJDIR" \
-    "$RTL/top_ann.sv" "$TB/tb_classify_ann.sv" \
-    --top-module tb_classify_ann
+    -GHIDDEN_SHIFT="$HIDDEN_SHIFT" \
+    "$RTL/top_ann.sv" \
+    --top-module top_ann \
+    --exe "$ROOT/tools/verilator_ann_main.cpp" \
+    -CFLAGS "-std=c++17"
+make -C "$OBJDIR" -f Vtop_ann.mk -j "${VERILATOR_JOBS:-1}"
 
 echo "[verilator-ann$TAG] images $FIRST..$LAST  ($(date))"
 cd "$RUNDIR"
-"$OBJDIR/Vtb_classify_ann" \
-    +first="$FIRST" +last="$LAST" +tag="$TAG" +timeout_ns="$TIMEOUT_NS"
+"$OBJDIR/Vtop_ann" \
+    +first="$FIRST" +last="$LAST" +tag="$TAG"
 
 cp -f "classify_ann${TAG}.csv" "$SIM/"
 cp -f "metrics_classify_ann${TAG}.csv" "$SIM/"
 echo "[verilator-ann$TAG] done  ($(date))"
-
