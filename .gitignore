@@ -13,6 +13,7 @@ __pycache__/
 data/*.npz
 
 # HDL simulator build products
+obj_dir/
 xsim.dir/
 *.jou
 *.log

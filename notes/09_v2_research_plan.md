@@ -173,7 +173,7 @@ For open-source reproducibility, prefer this split:
 HPRC:
   Python training/export sweeps
   Verilator lint
-  future Verilator C++ harness runs
+  Verilator smoke runs for open-source simulation
 
 TAMU Xcelium server:
   reference RTL runs
@@ -208,6 +208,29 @@ NUMEXPR_NUM_THREADS
 
 Override them only inside an allocated job when the scheduler grants more
 cores.
+
+After generating the memories on HPRC, run Verilator checks:
+
+```bash
+bash tools/verilator_lint.sh
+```
+
+Run a fast INT8 ANN smoke test:
+
+```bash
+bash tools/run_verilator_ann.sh 0 4 _smoke
+```
+
+That produces:
+
+```text
+sim/classify_ann_smoke.csv
+sim/metrics_classify_ann_smoke.csv
+```
+
+This is the first open-source simulation path. The event-driven SNN path is
+still validated with Xcelium for now; a faster Verilator event harness is a
+future v2 task.
 
 ## 9.9 Strong Final Claim To Aim For
 
