@@ -1,41 +1,42 @@
 """
-export_shd.py - Export the public SHD spike-audio dataset to the RTL format.
+export_shd.py - Train/export a sparse SHD benchmark to the RTL format.
 
-SHD (Spiking Heidelberg Digits) is a public spike-based spoken digit dataset.
-It has 700 input channels and 20 classes. This script uses a deliberately small
-sparse prototype classifier so we can test the hardware question first:
+SHD (Spiking Heidelberg Digits) is a public spike-audio dataset with 700 input
+channels and 20 classes. This script trains a small count-based MLP, prunes it
+to sparse weights, converts it to an event-driven SNN, and writes the same
+sim/*.mem files used by the Verilator runners.
 
-    Does event-driven RTL avoid work on a real sparse spike dataset?
+This is the first real public sparse benchmark path. It is still intentionally
+small so RTL simulation finishes quickly:
 
-The model is simple:
-    - Bin each SHD event stream into T_STEPS binary timesteps.
-    - Learn class prototypes by selecting channels that are more active for
-      each class than for other classes.
-    - Map selected input channels to one hidden detector per class.
-    - Map each class detector to the corresponding output.
-
-This is a baseline/export path, not a final ML model. If the hardware result is
-promising, the next step is a trained sparse SNN/ANN model with proper train/test
-accuracy reporting.
-
-Prerequisite:
-    python3 -m pip install --user tonic h5py
+    SHD event stream -> binned spikes -> sparse 700->64->20 model
 
 Usage:
+    python3 -m pip install tonic h5py
     python3 python/export_shd.py
     bash tools/run_verilator_event.sh 0 299 _shd
     bash tools/run_verilator_ann.sh 0 299 _shd
 """
 
 import os
-from typing import Iterable, List, Tuple
+from typing import Iterable, Tuple
 
 import numpy as np
+import torch
+import torch.nn as nn
+
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+torch.set_num_threads(int(os.environ.get("SNN_TORCH_THREADS", "1")))
+torch.set_num_interop_threads(int(os.environ.get("SNN_TORCH_INTEROP_THREADS", "1")))
 
 
 N_INPUT = 700
+N_HIDDEN = int(os.environ.get("SHD_N_HIDDEN", "64"))
 N_OUTPUT = 20
-N_HIDDEN = N_OUTPUT
 N_TOTAL = N_INPUT + 1 + N_HIDDEN + N_OUTPUT
 
 ID_BIAS = N_INPUT
@@ -43,11 +44,16 @@ ID_HIDDEN_BASE = N_INPUT + 1
 ID_OUTPUT_BASE = N_INPUT + 1 + N_HIDDEN
 
 T_STEPS = int(os.environ.get("SHD_T_STEPS", "100"))
-NUM_TRAIN = int(os.environ.get("SHD_NUM_TRAIN", "2000"))
+NUM_TRAIN = int(os.environ.get("SHD_NUM_TRAIN", "5000"))
 NUM_TEST_RTL = int(os.environ.get("SHD_NUM_TEST_RTL", "300"))
-FEATURES_PER_CLASS = int(os.environ.get("SHD_FEATURES_PER_CLASS", "32"))
+EPOCHS = int(os.environ.get("SHD_EPOCHS", "18"))
+BATCH_SIZE = int(os.environ.get("SHD_BATCH_SIZE", "128"))
+TOPK_W1 = int(os.environ.get("SHD_TOPK_W1", "32"))
 
-THRESHOLD = 1
+THR_RANGE = range(20, 800, 20)
+TUNE_SUBSET = int(os.environ.get("SHD_TUNE_SUBSET", "600"))
+EVAL_SUBSET = int(os.environ.get("SHD_EVAL_SUBSET", "600"))
+
 LEAK = 1
 ANN_HIDDEN_SHIFT = 0
 SEED = 11
@@ -59,8 +65,6 @@ def load_tonic_shd():
     except ImportError as exc:
         raise SystemExit(
             "Missing dependency 'tonic'. Install it in your active environment:\n"
-            "  python3 -m pip install --user tonic h5py\n"
-            "or, in conda:\n"
             "  python3 -m pip install tonic h5py"
         ) from exc
 
@@ -78,12 +82,10 @@ def event_fields(events) -> Tuple[np.ndarray, np.ndarray]:
         arr = np.asarray(events)
         if arr.ndim != 2 or arr.shape[1] < 2:
             raise ValueError("Unsupported SHD event array shape")
-        # Tonic's audio examples use txp ordering for audio datasets.
         return arr[:, 0], arr[:, 1]
 
     if "t" not in names:
         raise ValueError(f"SHD event dtype has no time field: {names}")
-
     if "x" in names:
         channel = events["x"]
     elif "p" in names:
@@ -101,13 +103,12 @@ def events_to_spikes(events) -> np.ndarray:
     t, channel = event_fields(events)
     t = np.asarray(t, dtype=np.float64)
     channel = np.asarray(channel, dtype=np.int64)
-
     valid = (channel >= 0) & (channel < N_INPUT)
     if not np.any(valid):
         return spikes
+
     t = t[valid]
     channel = channel[valid]
-
     t0 = float(t.min())
     t1 = float(t.max())
     if t1 <= t0:
@@ -132,66 +133,136 @@ def load_split(dataset, limit: int) -> Tuple[np.ndarray, np.ndarray]:
     return spikes, labels
 
 
-def select_features(train_spikes: np.ndarray, train_labels: np.ndarray) -> List[List[int]]:
-    counts = train_spikes.sum(axis=1).astype(np.float32)
-    global_mean = counts.mean(axis=0)
-    selected: List[List[int]] = []
-    for cls in range(N_OUTPUT):
-        mask = train_labels == cls
-        if not np.any(mask):
-            selected.append([])
-            continue
-        class_mean = counts[mask].mean(axis=0)
-        score = class_mean - global_mean
-        order = np.argsort(score)[::-1]
-        feats = [int(ch) for ch in order[:FEATURES_PER_CLASS] if score[ch] > 0]
-        if len(feats) < FEATURES_PER_CLASS:
-            feats = [int(ch) for ch in order[:FEATURES_PER_CLASS]]
-        selected.append(feats)
-    return selected
+def train_mlp(train_counts: np.ndarray, train_labels: np.ndarray,
+              test_counts: np.ndarray, test_labels: np.ndarray):
+    torch.manual_seed(SEED)
+    model = nn.Sequential(
+        nn.Linear(N_INPUT, N_HIDDEN, bias=False),
+        nn.ReLU(),
+        nn.Linear(N_HIDDEN, N_OUTPUT, bias=False),
+    )
+    opt = torch.optim.Adam(model.parameters(), lr=2e-3, weight_decay=1e-5)
+    loss_fn = nn.CrossEntropyLoss()
+
+    x_train = torch.tensor(train_counts / max(T_STEPS, 1), dtype=torch.float32)
+    y_train = torch.tensor(train_labels, dtype=torch.long)
+    x_test = torch.tensor(test_counts / max(T_STEPS, 1), dtype=torch.float32)
+    y_test = torch.tensor(test_labels, dtype=torch.long)
+
+    gen = torch.Generator().manual_seed(SEED)
+    for epoch in range(EPOCHS):
+        perm = torch.randperm(len(x_train), generator=gen)
+        model.train()
+        for start in range(0, len(x_train), BATCH_SIZE):
+            idx = perm[start:start + BATCH_SIZE]
+            opt.zero_grad(set_to_none=True)
+            loss = loss_fn(model(x_train[idx]), y_train[idx])
+            loss.backward()
+            opt.step()
+        if epoch in {0, EPOCHS - 1}:
+            with torch.no_grad():
+                pred = model(x_test).argmax(dim=1)
+                acc = (pred == y_test).float().mean().item()
+            print(f"  epoch {epoch + 1:02d}/{EPOCHS}: test-count acc {acc * 100:.2f}%")
+
+    with torch.no_grad():
+        train_acc = (model(x_train).argmax(dim=1) == y_train).float().mean().item()
+        test_acc = (model(x_test).argmax(dim=1) == y_test).float().mean().item()
+        w1 = model[0].weight.detach().cpu().numpy()
+        w2 = model[2].weight.detach().cpu().numpy()
+    return w1, w2, train_acc, test_acc
 
 
-def predict_from_features(spikes: np.ndarray, selected: List[List[int]]) -> np.ndarray:
-    counts = spikes.sum(axis=1)
-    scores = np.zeros((spikes.shape[0], N_OUTPUT), dtype=np.int32)
-    for cls, feats in enumerate(selected):
-        if feats:
-            scores[:, cls] = counts[:, feats].sum(axis=1)
-    return np.argmax(scores, axis=1)
+def prune_w1(w1: np.ndarray) -> np.ndarray:
+    sparse = np.zeros_like(w1)
+    k = min(TOPK_W1, w1.shape[1])
+    for h in range(w1.shape[0]):
+        idx = np.argsort(np.abs(w1[h]))[-k:]
+        sparse[h, idx] = w1[h, idx]
+    return sparse
 
 
-def build_memories(selected: List[List[int]]):
-    w1 = np.zeros((N_HIDDEN, N_INPUT), dtype=np.int8)
-    b1 = np.zeros(N_HIDDEN, dtype=np.int32)
-    w2 = np.zeros((N_OUTPUT, N_HIDDEN), dtype=np.int8)
-    b2 = np.zeros(N_OUTPUT, dtype=np.int32)
+def quantize_signed(weights: np.ndarray) -> np.ndarray:
+    max_abs = float(np.max(np.abs(weights)))
+    if max_abs == 0:
+        return np.zeros_like(weights, dtype=np.int8)
+    q = np.round(weights * (127.0 / max_abs))
+    return np.clip(q, -127, 127).astype(np.int8)
 
-    for cls, feats in enumerate(selected):
-        for ch in feats:
-            w1[cls, ch] = 1
-        w2[cls, cls] = 1
 
-    csr_dst: List[int] = []
-    csr_weight: List[int] = []
+def choose_ann_hidden_shift(counts: np.ndarray, w1q: np.ndarray) -> int:
+    hidden = counts.astype(np.int32) @ w1q.T.astype(np.int32)
+    hidden = np.maximum(hidden, 0)
+    max_val = int(hidden.max()) if hidden.size else 0
+    shift = 0
+    while shift < 16 and (max_val >> shift) > 255:
+        shift += 1
+    return shift
+
+
+def simulate_ann_int(counts: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
+                     w2q: np.ndarray, hidden_shift: int) -> float:
+    h_raw = counts.astype(np.int32) @ w1q.T.astype(np.int32)
+    h = np.maximum(h_raw, 0) >> hidden_shift
+    h = np.minimum(h, 255).astype(np.int32)
+    y = h @ w2q.T.astype(np.int32)
+    pred = np.argmax(y, axis=1)
+    return float((pred == labels).mean())
+
+
+def lif_leak(mem: np.ndarray) -> np.ndarray:
+    return np.where(mem > LEAK, mem - LEAK, np.where(mem > 0, 0, mem))
+
+
+def simulate_snn(spikes: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
+                 w2q: np.ndarray, threshold: int) -> float:
+    num = spikes.shape[0]
+    mem_h = np.zeros((num, N_HIDDEN), dtype=np.int32)
+    mem_o = np.zeros((num, N_OUTPUT), dtype=np.int32)
+    hidden_prev = np.zeros((num, N_HIDDEN), dtype=np.int32)
+    out_count = np.zeros((num, N_OUTPUT), dtype=np.int32)
+
+    w1i = w1q.astype(np.int32)
+    w2i = w2q.astype(np.int32)
+    for t in range(T_STEPS):
+        hin = spikes[:, t, :].astype(np.int32) @ w1i.T
+        mem_h = lif_leak(mem_h) + hin
+        hidden = mem_h >= threshold
+        mem_h[hidden] = 0
+
+        oin = hidden_prev @ w2i.T
+        mem_o = lif_leak(mem_o) + oin
+        out = mem_o >= threshold
+        mem_o[out] = 0
+        out_count += out.astype(np.int32)
+        hidden_prev = hidden.astype(np.int32)
+
+    pred = np.argmax(out_count, axis=1)
+    return float((pred == labels).mean())
+
+
+def build_csr(w1q: np.ndarray, w2q: np.ndarray):
+    by_src = [[] for _ in range(N_TOTAL)]
+    for h in range(N_HIDDEN):
+        hid = ID_HIDDEN_BASE + h
+        for src in np.flatnonzero(w1q[h]):
+            by_src[int(src)].append((hid, int(w1q[h, src])))
+    for out in range(N_OUTPUT):
+        out_id = ID_OUTPUT_BASE + out
+        for h in np.flatnonzero(w2q[out]):
+            by_src[ID_HIDDEN_BASE + int(h)].append((out_id, int(w2q[out, h])))
+
+    csr_dst = []
+    csr_weight = []
     src_start = [0] * N_TOTAL
     src_count = [0] * N_TOTAL
-
-    by_src: List[List[Tuple[int, int]]] = [[] for _ in range(N_TOTAL)]
-    for cls, feats in enumerate(selected):
-        hid = ID_HIDDEN_BASE + cls
-        out = ID_OUTPUT_BASE + cls
-        for ch in feats:
-            by_src[ch].append((hid, 1))
-        by_src[hid].append((out, 1))
-
     for src in range(N_TOTAL):
         src_start[src] = len(csr_dst)
         for dst, weight in by_src[src]:
             csr_dst.append(dst)
             csr_weight.append(weight)
         src_count[src] = len(by_src[src])
-
-    return w1, b1, w2, b2, csr_dst, csr_weight, src_start, src_count
+    return csr_dst, csr_weight, src_start, src_count
 
 
 def write_hex(path: str, values: Iterable[int], width: int):
@@ -202,9 +273,10 @@ def write_hex(path: str, values: Iterable[int], width: int):
 
 
 def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
-           selected: List[List[int]]):
+           counts: np.ndarray, w1q: np.ndarray, w2q: np.ndarray,
+           threshold: int, hidden_shift: int):
     os.makedirs(sim_dir, exist_ok=True)
-    w1, b1, w2, b2, csr_dst, csr_weight, src_start, src_count = build_memories(selected)
+    csr_dst, csr_weight, src_start, src_count = build_csr(w1q, w2q)
 
     write_hex(os.path.join(sim_dir, "csr_dst.mem"), csr_dst, 4)
     write_hex(os.path.join(sim_dir, "csr_weight.mem"), csr_weight, 2)
@@ -221,12 +293,12 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         for lab in labels:
             f.write(f"{int(lab)}\n")
 
-    pixels = np.minimum(spikes.sum(axis=1), 255).astype(np.uint8)
-    write_hex(os.path.join(sim_dir, "ann_pixels.mem"), pixels.flatten(), 2)
-    write_hex(os.path.join(sim_dir, "ann_w1.mem"), w1.flatten(), 2)
-    write_hex(os.path.join(sim_dir, "ann_b1.mem"), b1, 8)
-    write_hex(os.path.join(sim_dir, "ann_w2.mem"), w2.flatten(), 2)
-    write_hex(os.path.join(sim_dir, "ann_b2.mem"), b2, 8)
+    write_hex(os.path.join(sim_dir, "ann_pixels.mem"),
+              np.minimum(counts, 255).astype(np.uint8).flatten(), 2)
+    write_hex(os.path.join(sim_dir, "ann_w1.mem"), w1q.flatten(), 2)
+    write_hex(os.path.join(sim_dir, "ann_b1.mem"), np.zeros(N_HIDDEN, dtype=np.int32), 8)
+    write_hex(os.path.join(sim_dir, "ann_w2.mem"), w2q.flatten(), 2)
+    write_hex(os.path.join(sim_dir, "ann_b2.mem"), np.zeros(N_OUTPUT, dtype=np.int32), 8)
 
     with open(os.path.join(sim_dir, "snn_config.vh"), "w") as f:
         f.write("// Auto-generated by python/export_shd.py - do not edit by hand\n")
@@ -240,11 +312,11 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_ID_HIDDEN_BASE {ID_HIDDEN_BASE}\n")
         f.write(f"`define SNN_ID_OUTPUT_BASE {ID_OUTPUT_BASE}\n")
         f.write(f"`define SNN_T_STEPS        {T_STEPS}\n")
-        f.write(f"`define SNN_THRESHOLD      {THRESHOLD}\n")
+        f.write(f"`define SNN_THRESHOLD      {threshold}\n")
         f.write(f"`define SNN_LEAK           {LEAK}\n")
         f.write(f"`define SNN_NUM_TEST       {len(labels)}\n")
         f.write(f"`define SNN_NUM_SYN        {len(csr_dst)}\n")
-        f.write(f"`define SNN_ANN_HIDDEN_SHIFT {ANN_HIDDEN_SHIFT}\n")
+        f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
         f.write("`endif\n")
 
@@ -253,10 +325,12 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
 
 def main():
     np.random.seed(SEED)
+    torch.manual_seed(SEED)
     train_ds, test_ds = load_tonic_shd()
 
     print("=" * 64)
-    print("  SHD public spike-audio benchmark export")
+    print("  SHD sparse trained benchmark export")
+    print(f"  network: {N_INPUT} -> {N_HIDDEN} -> {N_OUTPUT}")
     print(f"  timesteps/sample: {T_STEPS}")
     print(f"  train samples used: {min(NUM_TRAIN, len(train_ds))}")
     print(f"  test samples exported: {min(NUM_TEST_RTL, len(test_ds))}")
@@ -264,25 +338,41 @@ def main():
 
     train_spikes, train_labels = load_split(train_ds, NUM_TRAIN)
     test_spikes, test_labels = load_split(test_ds, NUM_TEST_RTL)
-    selected = select_features(train_spikes, train_labels)
+    train_counts = train_spikes.sum(axis=1).astype(np.int32)
+    test_counts = test_spikes.sum(axis=1).astype(np.int32)
 
-    train_pred = predict_from_features(train_spikes, selected)
-    test_pred = predict_from_features(test_spikes, selected)
-    train_acc = float((train_pred == train_labels).mean())
-    test_acc = float((test_pred == test_labels).mean())
+    w1, w2, train_acc, test_acc = train_mlp(
+        train_counts, train_labels, test_counts, test_labels)
+    w1_sparse = prune_w1(w1)
+    w1q = quantize_signed(w1_sparse)
+    w2q = quantize_signed(w2)
+
+    hidden_shift = choose_ann_hidden_shift(train_counts, w1q)
+    ann_acc = simulate_ann_int(test_counts, test_labels, w1q, w2q, hidden_shift)
+
+    tune_n = min(TUNE_SUBSET, len(train_labels))
+    best_acc, best_thr = -1.0, None
+    for thr in THR_RANGE:
+        acc = simulate_snn(train_spikes[:tune_n], train_labels[:tune_n], w1q, w2q, thr)
+        if acc > best_acc:
+            best_acc, best_thr = acc, thr
+    eval_n = min(EVAL_SUBSET, len(test_labels))
+    snn_acc = simulate_snn(test_spikes[:eval_n], test_labels[:eval_n], w1q, w2q, best_thr)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sim_dir = os.path.abspath(os.path.join(script_dir, "..", "sim"))
-    n_syn = export(sim_dir, test_spikes, test_labels, selected)
+    n_syn = export(sim_dir, test_spikes, test_labels, test_counts,
+                   w1q, w2q, best_thr, hidden_shift)
 
     avg_events = float(test_spikes.sum()) / max(len(test_labels), 1)
     print("=" * 64)
-    print("  SHD sparse prototype export complete")
-    print(f"  network: {N_INPUT} -> {N_HIDDEN} -> {N_OUTPUT}  ({N_TOTAL} neurons)")
+    print("  SHD export complete")
+    print(f"  float count MLP train/test accuracy: {train_acc * 100:.2f}% / {test_acc * 100:.2f}%")
+    print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")
+    print(f"  sparse SNN threshold: {best_thr}")
+    print(f"  sparse SNN eval accuracy ({eval_n} samples): {snn_acc * 100:.2f}%")
     print(f"  CSR synapses: {n_syn}")
     print(f"  average binned input events/sample: {avg_events:.2f}")
-    print(f"  prototype train accuracy: {train_acc * 100:.2f}%")
-    print(f"  prototype exported-test accuracy: {test_acc * 100:.2f}%")
     print(f"  dense ANN MACs/sample: {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}")
     print(f"  exported to: {sim_dir}")
     print("=" * 64)

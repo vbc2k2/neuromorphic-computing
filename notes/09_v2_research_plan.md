@@ -279,7 +279,7 @@ Install the dataset loader:
 python3 -m pip install tonic h5py
 ```
 
-Export a sparse prototype SHD model and run both RTL baselines:
+Export a trained sparse SHD model and run both RTL baselines:
 
 ```bash
 python3 python/export_shd.py
@@ -289,11 +289,11 @@ cat sim/metrics_classify_event_shd.csv
 cat sim/metrics_classify_ann_shd.csv
 ```
 
-This is a real public dataset, but the first model is intentionally simple:
-class-prototype feature selection, one hidden detector per class, then one
-output per class. Treat the result as a hardware-sparsity probe. If accuracy is
-usable and the event-driven work is low, the next step is a trained sparse model
-for SHD rather than the simple prototype classifier.
+This is a real public dataset, but the first model is still intentionally small:
+a count-based MLP is trained, pruned, quantized, and converted to the same event
+RTL format. Treat the result as the first hardware-sparsity probe on public
+data. If accuracy and work reduction look good, the next step is a stronger
+temporal model rather than only count features.
 
 ## 9.11 Strong Final Claim To Aim For
 
