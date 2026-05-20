@@ -76,7 +76,7 @@ std::vector<int> read_labels(const std::string& path) {
     std::vector<int> labels;
     std::string token;
     while (in >> token) {
-        labels.push_back(static_cast<int>(std::stoul(token, nullptr, 16) & 0xf));
+        labels.push_back(std::stoi(token));
     }
     return labels;
 }

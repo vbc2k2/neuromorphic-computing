@@ -267,7 +267,35 @@ input stream and connectivity are genuinely sparse. A publishable version still
 needs a real event dataset such as N-MNIST, DVS Gesture, keyword spotting, or
 sensor anomaly detection.
 
-## 9.10 Strong Final Claim To Aim For
+## 9.10 SHD Public Spike-Audio Benchmark
+
+SHD is the first public dataset path to try because it is already spike-based
+and has only 700 input channels, which fits the current fully connected RTL
+better than raw 128x128 DVS vision.
+
+Install the dataset loader:
+
+```bash
+python3 -m pip install tonic h5py
+```
+
+Export a sparse prototype SHD model and run both RTL baselines:
+
+```bash
+python3 python/export_shd.py
+bash tools/run_verilator_event.sh 0 299 _shd
+bash tools/run_verilator_ann.sh 0 299 _shd
+cat sim/metrics_classify_event_shd.csv
+cat sim/metrics_classify_ann_shd.csv
+```
+
+This is a real public dataset, but the first model is intentionally simple:
+class-prototype feature selection, one hidden detector per class, then one
+output per class. Treat the result as a hardware-sparsity probe. If accuracy is
+usable and the event-driven work is low, the next step is a trained sparse model
+for SHD rather than the simple prototype classifier.
+
+## 9.11 Strong Final Claim To Aim For
 
 Do not claim:
 
