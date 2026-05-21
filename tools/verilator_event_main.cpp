@@ -179,6 +179,14 @@ void reset(EventTop& top) {
     for (int i = 0; i < 4; ++i) tick(top);
     top.rst_n = 1;
     for (int i = 0; i < 2; ++i) tick(top);
+
+    int guard = 0;
+    while (top.step_busy) {
+        if (++guard > (N_TOTAL * 4 + 1024)) {
+            throw std::runtime_error("timeout waiting for reset clear");
+        }
+        tick(top);
+    }
 }
 
 void inject_spike(EventTop& top, int neuron_id, std::vector<int>& out_count, int& cycles) {
