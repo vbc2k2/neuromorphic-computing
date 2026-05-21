@@ -39,6 +39,17 @@ python3 tools/bench.py run nmnist --design event_ram --tag _nmnist_t50_k128_ram 
 python3 tools/bench.py summarize nmnist --tag _nmnist_t50_k128_ram
 ```
 
+Run the 2-lane RAM-state event prototype:
+
+```bash
+python3 tools/bench.py run nmnist --design event_ram2 --tag _nmnist_t50_k128_ram2lane --first 0 --last 9 --max-cycles 300000000
+python3 tools/bench.py run nmnist --design event_ram2 --tag _nmnist_t50_k128_ram2lane --max-cycles 300000000
+python3 tools/bench.py run nmnist --design ann --tag _nmnist_t50_k128_ram2lane
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_ram2lane event_ram2 xilinx
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_ram2lane event_ram2 asic
+python3 tools/report.py --tag _nmnist_t50_k128_ram2lane --event-design event_ram2
+```
+
 Run open-source synthesis/stat estimates after a tagged RTL run:
 
 ```bash

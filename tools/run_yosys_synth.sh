@@ -10,12 +10,13 @@
 #   bash tools/run_yosys_synth.sh _nmnist_pipe all generic
 #   bash tools/run_yosys_synth.sh _nmnist_pipe event xilinx
 #   bash tools/run_yosys_synth.sh _nmnist_pipe event_ram xilinx
+#   bash tools/run_yosys_synth.sh _nmnist_pipe event_ram2 xilinx
 #   ASIC_LIBERTY=/path/to/sky130.lib bash tools/run_yosys_synth.sh _nmnist_pipe event_ram asic
 #
 # Arguments:
 #   tag     matches the Verilator/bench tag. Uses sim/snn_config${tag}.vh when
 #           present, otherwise sim/snn_config.vh.
-#   design  event, event_ram, ann, or all.
+#   design  event, event_ram, event_ram2, ann, or all.
 #   flow    generic: technology-independent memory-aware stats.
 #           xilinx:  synth_xilinx LUT/FF/BRAM/DSP estimate, excluding I/O pads.
 #           asic:    ASIC-oriented logic mapping. Keeps memories abstract and
@@ -272,13 +273,71 @@ $(asic_steps)
     echo "[yosys-event-ram$TAG] wrote $log"
 }
 
+run_event_ram2() {
+    for v in N_TOTAL THRESHOLD LEAK NUM_SYN; do
+        require_cfg "$v"
+    done
+
+    local log="$RESULTS/yosys_event_ram2${TAG}_${FLOW}.log"
+    echo "[yosys-event-ram2$TAG] flow=$FLOW config=$(basename "$CFG")"
+    print_asic_note
+    (
+        cd "$SIM"
+        case "$FLOW" in
+            generic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
+                    hierarchy -top top_event_ram2 \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+                    proc; opt; memory -nomap; opt; stat
+                "
+                ;;
+            xilinx)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
+                    hierarchy -top top_event_ram2 \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+                    synth_xilinx -family xc7 -noiopad
+                    stat
+                "
+                ;;
+            asic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
+                    hierarchy -top top_event_ram2 \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+$(asic_steps)
+                "
+                ;;
+            *)
+                echo "ERROR: unknown flow '$FLOW' (use generic, xilinx, or asic)" >&2
+                exit 1
+                ;;
+        esac
+    )
+    echo "[yosys-event-ram2$TAG] wrote $log"
+}
+
 case "$DESIGN" in
     event)     run_event ;;
     event_ram) run_event_ram ;;
+    event_ram2) run_event_ram2 ;;
     ann)       run_ann ;;
     all)       run_event; run_ann ;;
     *)
-        echo "ERROR: unknown design '$DESIGN' (use event, ann, or all)" >&2
+        echo "ERROR: unknown design '$DESIGN' (use event, event_ram, event_ram2, ann, or all)" >&2
         exit 1
         ;;
 esac

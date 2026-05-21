@@ -286,6 +286,15 @@ def command_run(args: argparse.Namespace) -> None:
                 tag,
                 str(args.max_cycles),
             ])
+        elif design == "event_ram2":
+            run([
+                "bash",
+                "tools/run_verilator_event_ram2.sh",
+                str(first),
+                str(last),
+                tag,
+                str(args.max_cycles),
+            ])
         elif design == "ann":
             run(["bash", "tools/run_verilator_ann.sh", str(first), str(last), tag])
         else:
@@ -416,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_p = sub.add_parser("run", help="run Verilator RTL for current exported benchmark")
     run_p.add_argument("benchmark")
-    run_p.add_argument("--design", choices=["event", "event_ram", "ann", "all"], default="all")
+    run_p.add_argument("--design", choices=["event", "event_ram", "event_ram2", "ann", "all"], default="all")
     run_p.add_argument("--first", "--start", dest="first", type=int, default=0)
     run_p.add_argument("--last", "--end", dest="last", type=int)
     run_p.add_argument("--tag")
@@ -431,7 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     all_p = sub.add_parser("all", help="export, run event+ANN, and summarize")
     all_p.add_argument("benchmark")
-    all_p.add_argument("--design", choices=["event", "event_ram", "ann", "all"], default="all")
+    all_p.add_argument("--design", choices=["event", "event_ram", "event_ram2", "ann", "all"], default="all")
     all_p.add_argument("--first", "--start", dest="first", type=int, default=0)
     all_p.add_argument("--last", "--end", dest="last", type=int)
     all_p.add_argument("--tag")

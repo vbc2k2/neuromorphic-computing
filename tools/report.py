@@ -177,12 +177,12 @@ def main() -> None:
         description="Summarize accuracy, work, FPGA stats, and ASIC-style stats for a tag"
     )
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--event-design", choices=["event", "event_ram"], default="event_ram")
+    parser.add_argument("--event-design", choices=["event", "event_ram", "event_ram2"], default="event_ram")
     parser.add_argument("--format", choices=["text", "md", "csv"], default="text")
     args = parser.parse_args()
 
     tag = args.tag
-    event_log_prefix = "event_ram" if args.event_design == "event_ram" else "event"
+    event_log_prefix = args.event_design
     event_display = args.event_design
 
     cfg = parse_config(config_path(tag))
