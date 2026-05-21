@@ -208,6 +208,8 @@ def command_doctor(args: argparse.Namespace) -> None:
         print("sim/snn_config.vh:")
         for key in [
             "SNN_DATASET",
+            "SNN_SELECTION",
+            "SNN_LABEL_HIST",
             "SNN_N_INPUT",
             "SNN_N_HIDDEN",
             "SNN_N_OUTPUT",
@@ -306,6 +308,10 @@ def command_summarize(args: argparse.Namespace) -> None:
     print(f"Config source: {cfg_source}")
     if cfg.get("SNN_DATASET"):
         print(f"Dataset: {cfg.get('SNN_DATASET')}")
+    if cfg.get("SNN_SELECTION"):
+        print(f"Selection: {cfg.get('SNN_SELECTION')}")
+    if cfg.get("SNN_LABEL_HIST"):
+        print(f"Label histogram: {cfg.get('SNN_LABEL_HIST')}")
     print("=" * 78)
     for design, metrics in rows:
         ops = metrics.get("mac_ops", metrics.get("synapse_ops", 0))
