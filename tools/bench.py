@@ -216,6 +216,8 @@ def command_doctor(args: argparse.Namespace) -> None:
             "SNN_T_STEPS",
             "SNN_NUM_TEST",
             "SNN_NUM_SYN",
+            "SNN_TOPK_W1",
+            "SNN_FINETUNE_EPOCHS",
         ]:
             if key in cfg:
                 print(f"  {key}={cfg[key]}")

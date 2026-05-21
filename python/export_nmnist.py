@@ -48,7 +48,8 @@ NUM_TRAIN = int(os.environ.get("NMNIST_NUM_TRAIN", "5000"))
 NUM_TEST_RTL = int(os.environ.get("NMNIST_NUM_TEST_RTL", "300"))
 EPOCHS = int(os.environ.get("NMNIST_EPOCHS", "18"))
 BATCH_SIZE = int(os.environ.get("NMNIST_BATCH_SIZE", "128"))
-TOPK_W1 = int(os.environ.get("NMNIST_TOPK_W1", "64"))
+TOPK_W1 = int(os.environ.get("NMNIST_TOPK_W1", "128"))
+FINETUNE_EPOCHS = int(os.environ.get("NMNIST_FINETUNE_EPOCHS", "12"))
 
 THR_RANGE = range(20, 1500, 20)
 TUNE_SUBSET = int(os.environ.get("NMNIST_TUNE_SUBSET", "500"))
@@ -202,6 +203,15 @@ def load_split(dataset, indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]
     return spikes, labels
 
 
+def eval_model(model: nn.Module, counts: np.ndarray, labels: np.ndarray) -> float:
+    scale = max(T_STEPS, 1)
+    x = torch.tensor(counts / scale, dtype=torch.float32)
+    y = torch.tensor(labels, dtype=torch.long)
+    with torch.no_grad():
+        pred = model(x).argmax(dim=1)
+        return (pred == y).float().mean().item()
+
+
 def train_mlp(train_counts: np.ndarray, train_labels: np.ndarray,
               test_counts: np.ndarray, test_labels: np.ndarray):
     torch.manual_seed(SEED)
@@ -235,12 +245,9 @@ def train_mlp(train_counts: np.ndarray, train_labels: np.ndarray,
                 acc = (pred == y_test).float().mean().item()
             print(f"  epoch {epoch + 1:02d}/{EPOCHS}: test-count acc {acc * 100:.2f}%")
 
-    with torch.no_grad():
-        train_acc = (model(x_train).argmax(dim=1) == y_train).float().mean().item()
-        test_acc = (model(x_test).argmax(dim=1) == y_test).float().mean().item()
-        w1 = model[0].weight.detach().cpu().numpy()
-        w2 = model[2].weight.detach().cpu().numpy()
-    return w1, w2, train_acc, test_acc
+    train_acc = eval_model(model, train_counts, train_labels)
+    test_acc = eval_model(model, test_counts, test_labels)
+    return model, train_acc, test_acc
 
 
 def prune_w1(w1: np.ndarray) -> np.ndarray:
@@ -252,12 +259,77 @@ def prune_w1(w1: np.ndarray) -> np.ndarray:
     return sparse
 
 
+def topk_mask(w1: np.ndarray) -> np.ndarray:
+    mask = np.zeros_like(w1, dtype=np.float32)
+    k = min(TOPK_W1, w1.shape[1])
+    for h in range(w1.shape[0]):
+        idx = np.argsort(np.abs(w1[h]))[-k:]
+        mask[h, idx] = 1.0
+    return mask
+
+
+def finetune_sparse(model: nn.Module, mask_np: np.ndarray,
+                    train_counts: np.ndarray, train_labels: np.ndarray,
+                    test_counts: np.ndarray, test_labels: np.ndarray):
+    if FINETUNE_EPOCHS <= 0:
+        return model, eval_model(model, train_counts, train_labels), eval_model(model, test_counts, test_labels)
+
+    scale = max(T_STEPS, 1)
+    x_train = torch.tensor(train_counts / scale, dtype=torch.float32)
+    y_train = torch.tensor(train_labels, dtype=torch.long)
+    mask = torch.tensor(mask_np, dtype=torch.float32)
+    opt = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=1e-5)
+    loss_fn = nn.CrossEntropyLoss()
+    gen = torch.Generator().manual_seed(SEED + 77)
+
+    with torch.no_grad():
+        model[0].weight.mul_(mask)
+
+    for epoch in range(FINETUNE_EPOCHS):
+        perm = torch.randperm(len(x_train), generator=gen)
+        model.train()
+        for start in range(0, len(x_train), BATCH_SIZE):
+            idx = perm[start:start + BATCH_SIZE]
+            opt.zero_grad(set_to_none=True)
+            loss = loss_fn(model(x_train[idx]), y_train[idx])
+            loss.backward()
+            model[0].weight.grad.mul_(mask)
+            opt.step()
+            with torch.no_grad():
+                model[0].weight.mul_(mask)
+        if epoch in {0, FINETUNE_EPOCHS - 1}:
+            acc = eval_model(model, test_counts, test_labels)
+            print(f"  sparse finetune {epoch + 1:02d}/{FINETUNE_EPOCHS}: test-count acc {acc * 100:.2f}%")
+
+    return model, eval_model(model, train_counts, train_labels), eval_model(model, test_counts, test_labels)
+
+
 def quantize_signed(weights: np.ndarray) -> np.ndarray:
     max_abs = float(np.max(np.abs(weights)))
     if max_abs == 0:
         return np.zeros_like(weights, dtype=np.int8)
     q = np.round(weights * (127.0 / max_abs))
     return np.clip(q, -127, 127).astype(np.int8)
+
+
+def quantize_folded(w1_sparse: np.ndarray, w2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-hidden W1 quantization, with the hidden scale folded into W2.
+
+    The RTL has no floating scale multipliers. For hidden neuron h, qW1[h] is
+    scaled independently for better int8 resolution. Dividing W2[:, h] by the
+    same scale keeps the output logits equivalent up to one global W2 scale.
+    """
+    w1q = np.zeros_like(w1_sparse, dtype=np.int8)
+    scales = np.ones(w1_sparse.shape[0], dtype=np.float32)
+    for h in range(w1_sparse.shape[0]):
+        max_abs = float(np.max(np.abs(w1_sparse[h])))
+        if max_abs > 0:
+            scales[h] = 127.0 / max_abs
+            q = np.round(w1_sparse[h] * scales[h])
+            w1q[h] = np.clip(q, -127, 127).astype(np.int8)
+    w2_folded = w2 / scales[np.newaxis, :]
+    w2q = quantize_signed(w2_folded)
+    return w1q, w2q
 
 
 def simulate_ann_int(counts: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
@@ -395,6 +467,8 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_LEAK           {LEAK}\n")
         f.write(f"`define SNN_NUM_TEST       {len(labels)}\n")
         f.write(f"`define SNN_NUM_SYN        {len(csr_dst)}\n")
+        f.write(f"`define SNN_TOPK_W1        {TOPK_W1}\n")
+        f.write(f"`define SNN_FINETUNE_EPOCHS {FINETUNE_EPOCHS}\n")
         f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
         f.write("`endif\n")
@@ -422,11 +496,17 @@ def main():
     train_counts = train_spikes.sum(axis=1).astype(np.int32)
     test_counts = test_spikes.sum(axis=1).astype(np.int32)
 
-    w1, w2, train_acc, test_acc = train_mlp(
+    model, train_acc, test_acc = train_mlp(
         train_counts, train_labels, test_counts, test_labels)
-    w1_sparse = prune_w1(w1)
-    w1q = quantize_signed(w1_sparse)
-    w2q = quantize_signed(w2)
+    w1_dense = model[0].weight.detach().cpu().numpy()
+    mask_np = topk_mask(w1_dense)
+    with torch.no_grad():
+        model[0].weight.mul_(torch.tensor(mask_np, dtype=torch.float32))
+    model, sparse_train_acc, sparse_test_acc = finetune_sparse(
+        model, mask_np, train_counts, train_labels, test_counts, test_labels)
+    w1_sparse = model[0].weight.detach().cpu().numpy()
+    w2 = model[2].weight.detach().cpu().numpy()
+    w1q, w2q = quantize_folded(w1_sparse, w2)
 
     hidden_shift = choose_ann_hidden_shift(train_counts, train_labels, w1q, w2q)
     ann_acc = simulate_ann_int(test_counts, test_labels, w1q, w2q, hidden_shift)
@@ -452,6 +532,9 @@ def main():
     print("=" * 64)
     print("  N-MNIST export complete")
     print(f"  float count MLP train/test accuracy: {train_acc * 100:.2f}% / {test_acc * 100:.2f}%")
+    print(f"  sparse float MLP train/test accuracy: {sparse_train_acc * 100:.2f}% / {sparse_test_acc * 100:.2f}%")
+    print(f"  sparse W1 top-k per hidden neuron: {TOPK_W1}")
+    print(f"  sparse finetune epochs: {FINETUNE_EPOCHS}")
     print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")
     print(f"  sparse INT8 ANN hidden shift: {hidden_shift}")
     print(f"  sparse SNN threshold: {best_thr}")
