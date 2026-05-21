@@ -47,6 +47,23 @@ bash tools/run_yosys_synth.sh _nmnist_pipe all xilinx
 bash tools/run_yosys_synth.sh _nmnist_pipe event_ram xilinx
 ```
 
+Run ASIC-oriented logic stats. Without a Liberty file this reports generic
+mapped logic and abstract memories; with `ASIC_LIBERTY` it also reports
+standard-cell area units from that library.
+
+```bash
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram event_ram asic
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram ann asic
+
+ASIC_LIBERTY=/path/to/sky130_fd_sc_hd__tt_025C_1v80.lib \
+  bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram event_ram asic
+ASIC_LIBERTY=/path/to/sky130_fd_sc_hd__tt_025C_1v80.lib \
+  bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram ann asic
+```
+
+The ASIC mode is not a routed/post-layout result. It keeps SRAM-like memories
+abstract, so compare logic area separately from model/state memory bits.
+
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
 exists, runs from `sim/` so `$readmemh` files resolve correctly, and applies the
 same parameters used by the Verilator benchmark.

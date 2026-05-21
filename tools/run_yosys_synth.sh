@@ -10,6 +10,7 @@
 #   bash tools/run_yosys_synth.sh _nmnist_pipe all generic
 #   bash tools/run_yosys_synth.sh _nmnist_pipe event xilinx
 #   bash tools/run_yosys_synth.sh _nmnist_pipe event_ram xilinx
+#   ASIC_LIBERTY=/path/to/sky130.lib bash tools/run_yosys_synth.sh _nmnist_pipe event_ram asic
 #
 # Arguments:
 #   tag     matches the Verilator/bench tag. Uses sim/snn_config${tag}.vh when
@@ -17,6 +18,9 @@
 #   design  event, event_ram, ann, or all.
 #   flow    generic: technology-independent memory-aware stats.
 #           xilinx:  synth_xilinx LUT/FF/BRAM/DSP estimate, excluding I/O pads.
+#           asic:    ASIC-oriented logic mapping. Keeps memories abstract and
+#                    uses ASIC_LIBERTY or LIBERTY_FILE for standard-cell area
+#                    when provided.
 # ============================================================================
 set -euo pipefail
 
@@ -30,6 +34,7 @@ SIM="$ROOT/sim"
 RTL="$ROOT/rtl"
 RESULTS="$ROOT/results"
 CFG="$SIM/snn_config${TAG}.vh"
+ASIC_LIBERTY_FILE="${ASIC_LIBERTY:-${LIBERTY_FILE:-}}"
 
 command -v yosys >/dev/null 2>&1 || {
     echo "ERROR: yosys is not on PATH" >&2
@@ -71,6 +76,36 @@ for v in N_INPUT N_HIDDEN N_OUTPUT; do
     require_cfg "$v"
 done
 
+asic_steps() {
+    if [ -n "$ASIC_LIBERTY_FILE" ]; then
+        cat <<EOF
+                    proc; opt; memory -nomap; opt
+                    techmap; opt
+                    dfflibmap -liberty $ASIC_LIBERTY_FILE
+                    abc -liberty $ASIC_LIBERTY_FILE
+                    clean
+                    stat -liberty $ASIC_LIBERTY_FILE
+EOF
+    else
+        cat <<EOF
+                    proc; opt; memory -nomap; opt
+                    techmap; opt
+                    stat
+EOF
+    fi
+}
+
+print_asic_note() {
+    if [ "$FLOW" = "asic" ]; then
+        if [ -n "$ASIC_LIBERTY_FILE" ]; then
+            echo "  ASIC Liberty: $ASIC_LIBERTY_FILE"
+        else
+            echo "  ASIC Liberty: not set; reporting generic mapped logic and abstract memories"
+            echo "  Set ASIC_LIBERTY=/path/to/*.lib for standard-cell area units."
+        fi
+    fi
+}
+
 run_event() {
     for v in N_TOTAL THRESHOLD LEAK NUM_SYN; do
         require_cfg "$v"
@@ -78,6 +113,7 @@ run_event() {
 
     local log="$RESULTS/yosys_event${TAG}_${FLOW}.log"
     echo "[yosys-event$TAG] flow=$FLOW config=$(basename "$CFG")"
+    print_asic_note
     (
         cd "$SIM"
         case "$FLOW" in
@@ -106,8 +142,20 @@ run_event() {
                     stat
                 "
                 ;;
+            asic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/neuron_core.sv ../rtl/synapse_csr.sv ../rtl/spike_router.sv ../rtl/top.sv
+                    hierarchy -top top \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 2048
+$(asic_steps)
+                "
+                ;;
             *)
-                echo "ERROR: unknown flow '$FLOW' (use generic or xilinx)" >&2
+                echo "ERROR: unknown flow '$FLOW' (use generic, xilinx, or asic)" >&2
                 exit 1
                 ;;
         esac
@@ -120,6 +168,7 @@ run_ann() {
 
     local log="$RESULTS/yosys_ann${TAG}_${FLOW}.log"
     echo "[yosys-ann$TAG] flow=$FLOW config=$(basename "$CFG")"
+    print_asic_note
     (
         cd "$SIM"
         case "$FLOW" in
@@ -146,8 +195,19 @@ run_ann() {
                     stat
                 "
                 ;;
+            asic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer ../rtl/top_ann.sv
+                    hierarchy -top top_ann \
+                        -chparam N_INPUT $N_INPUT \
+                        -chparam N_HIDDEN $N_HIDDEN \
+                        -chparam N_OUTPUT $N_OUTPUT \
+                        -chparam HIDDEN_SHIFT $HIDDEN_SHIFT
+$(asic_steps)
+                "
+                ;;
             *)
-                echo "ERROR: unknown flow '$FLOW' (use generic or xilinx)" >&2
+                echo "ERROR: unknown flow '$FLOW' (use generic, xilinx, or asic)" >&2
                 exit 1
                 ;;
         esac
@@ -162,6 +222,7 @@ run_event_ram() {
 
     local log="$RESULTS/yosys_event_ram${TAG}_${FLOW}.log"
     echo "[yosys-event-ram$TAG] flow=$FLOW config=$(basename "$CFG")"
+    print_asic_note
     (
         cd "$SIM"
         case "$FLOW" in
@@ -190,8 +251,20 @@ run_event_ram() {
                     stat
                 "
                 ;;
+            asic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram.sv
+                    hierarchy -top top_event_ram \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+$(asic_steps)
+                "
+                ;;
             *)
-                echo "ERROR: unknown flow '$FLOW' (use generic or xilinx)" >&2
+                echo "ERROR: unknown flow '$FLOW' (use generic, xilinx, or asic)" >&2
                 exit 1
                 ;;
         esac
