@@ -32,6 +32,17 @@ python3 tools/bench.py run nmnist --design ann --last 49
 python3 tools/bench.py summarize nmnist
 ```
 
+Run open-source synthesis/stat estimates after a tagged RTL run:
+
+```bash
+bash tools/run_yosys_synth.sh _nmnist_pipe all generic
+bash tools/run_yosys_synth.sh _nmnist_pipe all xilinx
+```
+
+The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
+exists, runs from `sim/` so `$readmemh` files resolve correctly, and applies the
+same parameters used by the Verilator benchmark.
+
 Pass exporter tuning parameters:
 
 ```bash
