@@ -101,7 +101,7 @@ run_event() {
                         -chparam LEAK $LEAK \
                         -chparam NUM_SYN $NUM_SYN \
                         -chparam FIFO_DEPTH 2048
-                    synth_xilinx -family xc7 -top top
+                    synth_xilinx -family xc7
                     stat
                 "
                 ;;
@@ -141,7 +141,7 @@ run_ann() {
                         -chparam N_HIDDEN $N_HIDDEN \
                         -chparam N_OUTPUT $N_OUTPUT \
                         -chparam HIDDEN_SHIFT $HIDDEN_SHIFT
-                    synth_xilinx -family xc7 -top top_ann
+                    synth_xilinx -family xc7
                     stat
                 "
                 ;;
