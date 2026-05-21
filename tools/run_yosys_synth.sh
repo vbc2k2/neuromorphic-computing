@@ -15,7 +15,7 @@
 #           present, otherwise sim/snn_config.vh.
 #   design  event, ann, or all.
 #   flow    generic: technology-independent memory-aware stats.
-#           xilinx:  synth_xilinx LUT/FF/BRAM/DSP estimate.
+#           xilinx:  synth_xilinx LUT/FF/BRAM/DSP estimate, excluding I/O pads.
 # ============================================================================
 set -euo pipefail
 
@@ -101,7 +101,7 @@ run_event() {
                         -chparam LEAK $LEAK \
                         -chparam NUM_SYN $NUM_SYN \
                         -chparam FIFO_DEPTH 2048
-                    synth_xilinx -family xc7
+                    synth_xilinx -family xc7 -noiopad
                     stat
                 "
                 ;;
@@ -141,7 +141,7 @@ run_ann() {
                         -chparam N_HIDDEN $N_HIDDEN \
                         -chparam N_OUTPUT $N_OUTPUT \
                         -chparam HIDDEN_SHIFT $HIDDEN_SHIFT
-                    synth_xilinx -family xc7
+                    synth_xilinx -family xc7 -noiopad
                     stat
                 "
                 ;;

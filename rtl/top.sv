@@ -49,9 +49,7 @@ module top #(
 
     // Output spike monitoring
     output logic [NUM_NEURONS-1:0]      neuron_spikes,
-`ifdef YOSYS
-    output logic [NUM_NEURONS*MEMBRANE_WIDTH-1:0] debug_membrane_flat,
-`else
+`ifndef YOSYS
     output logic signed [MEMBRANE_WIDTH-1:0] debug_membrane [NUM_NEURONS],
 `endif
 
@@ -249,10 +247,7 @@ module top #(
             assign neuron_spike_in_valid =
                 deliver_valid && (deliver_dst_id == ID_WIDTH'(g));
 
-`ifdef YOSYS
-            assign debug_membrane_flat[g*MEMBRANE_WIDTH +: MEMBRANE_WIDTH] =
-                debug_membrane_i[g];
-`else
+`ifndef YOSYS
             assign debug_membrane[g] = debug_membrane_i[g];
 `endif
 
