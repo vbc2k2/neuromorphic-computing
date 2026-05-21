@@ -15,6 +15,7 @@ Usage:
     bash tools/run_verilator_ann.sh 0 299 _nmnist
 """
 
+import json
 import os
 from typing import Iterable, Sequence, Tuple
 
@@ -50,14 +51,28 @@ EPOCHS = int(os.environ.get("NMNIST_EPOCHS", "18"))
 BATCH_SIZE = int(os.environ.get("NMNIST_BATCH_SIZE", "128"))
 TOPK_W1 = int(os.environ.get("NMNIST_TOPK_W1", "128"))
 FINETUNE_EPOCHS = int(os.environ.get("NMNIST_FINETUNE_EPOCHS", "12"))
+BIAS_MODE = os.environ.get("NMNIST_BIAS_MODE", "none").lower()
+ACTIVITY_LAMBDA = float(os.environ.get("NMNIST_ACTIVITY_LAMBDA", "0.0"))
 
-THR_RANGE = range(20, 1500, 20)
+THR_MIN = int(os.environ.get("NMNIST_THR_MIN", "20"))
+THR_MAX = int(os.environ.get("NMNIST_THR_MAX", "1480"))
+THR_STEP = int(os.environ.get("NMNIST_THR_STEP", "20"))
+THRESHOLD_OBJECTIVE = os.environ.get("NMNIST_THRESHOLD_OBJECTIVE", "accuracy").lower()
+THRESHOLD_OP_PENALTY = float(os.environ.get("NMNIST_THRESHOLD_OP_PENALTY", "0.0"))
+THR_RANGE = range(THR_MIN, THR_MAX + 1, THR_STEP)
 TUNE_SUBSET = int(os.environ.get("NMNIST_TUNE_SUBSET", "500"))
 EVAL_SUBSET = int(os.environ.get("NMNIST_EVAL_SUBSET", "500"))
 
 LEAK = 1
 SEED = 13
 SELECTION = os.environ.get("NMNIST_SELECTION", "balanced")
+
+if BIAS_MODE not in {"none", "hidden", "all"}:
+    raise SystemExit("NMNIST_BIAS_MODE must be one of: none, hidden, all")
+if THRESHOLD_OBJECTIVE not in {"accuracy", "ops", "edge"}:
+    raise SystemExit("NMNIST_THRESHOLD_OBJECTIVE must be one of: accuracy, ops, edge")
+if THR_STEP <= 0:
+    raise SystemExit("NMNIST_THR_STEP must be positive")
 
 
 def load_tonic_nmnist():
@@ -215,10 +230,12 @@ def eval_model(model: nn.Module, counts: np.ndarray, labels: np.ndarray) -> floa
 def train_mlp(train_counts: np.ndarray, train_labels: np.ndarray,
               test_counts: np.ndarray, test_labels: np.ndarray):
     torch.manual_seed(SEED)
+    hidden_bias = BIAS_MODE in {"hidden", "all"}
+    output_bias = BIAS_MODE == "all"
     model = nn.Sequential(
-        nn.Linear(N_INPUT, N_HIDDEN, bias=False),
+        nn.Linear(N_INPUT, N_HIDDEN, bias=hidden_bias),
         nn.ReLU(),
-        nn.Linear(N_HIDDEN, N_OUTPUT, bias=False),
+        nn.Linear(N_HIDDEN, N_OUTPUT, bias=output_bias),
     )
     opt = torch.optim.Adam(model.parameters(), lr=2e-3, weight_decay=1e-5)
     loss_fn = nn.CrossEntropyLoss()
@@ -291,7 +308,11 @@ def finetune_sparse(model: nn.Module, mask_np: np.ndarray,
         for start in range(0, len(x_train), BATCH_SIZE):
             idx = perm[start:start + BATCH_SIZE]
             opt.zero_grad(set_to_none=True)
-            loss = loss_fn(model(x_train[idx]), y_train[idx])
+            hidden = model[1](model[0](x_train[idx]))
+            logits = model[2](hidden)
+            loss = loss_fn(logits, y_train[idx])
+            if ACTIVITY_LAMBDA > 0.0:
+                loss = loss + ACTIVITY_LAMBDA * hidden.mean()
             loss.backward()
             model[0].weight.grad.mul_(mask)
             opt.step()
@@ -304,20 +325,30 @@ def finetune_sparse(model: nn.Module, mask_np: np.ndarray,
     return model, eval_model(model, train_counts, train_labels), eval_model(model, test_counts, test_labels)
 
 
-def quantize_signed(weights: np.ndarray) -> np.ndarray:
+def quantize_signed_with_scale(weights: np.ndarray) -> Tuple[np.ndarray, float]:
     max_abs = float(np.max(np.abs(weights)))
     if max_abs == 0:
-        return np.zeros_like(weights, dtype=np.int8)
-    q = np.round(weights * (127.0 / max_abs))
-    return np.clip(q, -127, 127).astype(np.int8)
+        return np.zeros_like(weights, dtype=np.int8), 1.0
+    scale = 127.0 / max_abs
+    q = np.round(weights * scale)
+    return np.clip(q, -127, 127).astype(np.int8), scale
 
 
-def quantize_folded(w1_sparse: np.ndarray, w2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def quantize_signed(weights: np.ndarray) -> np.ndarray:
+    return quantize_signed_with_scale(weights)[0]
+
+
+def quantize_folded(w1_sparse: np.ndarray, w2: np.ndarray,
+                    b1: np.ndarray | None = None,
+                    b2: np.ndarray | None = None):
     """Per-hidden W1 quantization, with the hidden scale folded into W2.
 
     The RTL has no floating scale multipliers. For hidden neuron h, qW1[h] is
     scaled independently for better int8 resolution. Dividing W2[:, h] by the
     same scale keeps the output logits equivalent up to one global W2 scale.
+    Hidden/output bias is represented in the SNN as a bias neuron that fires
+    once per timestep, so the ANN bias memories receive the per-timestep bias
+    multiplied by T_STEPS.
     """
     w1q = np.zeros_like(w1_sparse, dtype=np.int8)
     scales = np.ones(w1_sparse.shape[0], dtype=np.float32)
@@ -328,25 +359,39 @@ def quantize_folded(w1_sparse: np.ndarray, w2: np.ndarray) -> Tuple[np.ndarray, 
             q = np.round(w1_sparse[h] * scales[h])
             w1q[h] = np.clip(q, -127, 127).astype(np.int8)
     w2_folded = w2 / scales[np.newaxis, :]
-    w2q = quantize_signed(w2_folded)
-    return w1q, w2q
+    w2q, w2_scale = quantize_signed_with_scale(w2_folded)
+
+    b1_spike = np.zeros(N_HIDDEN, dtype=np.int8)
+    b2_spike = np.zeros(N_OUTPUT, dtype=np.int8)
+    if b1 is not None:
+        q = np.round(b1 * scales)
+        b1_spike = np.clip(q, -127, 127).astype(np.int8)
+    if b2 is not None:
+        q = np.round(b2 * w2_scale)
+        b2_spike = np.clip(q, -127, 127).astype(np.int8)
+
+    b1_ann = (b1_spike.astype(np.int32) * T_STEPS).astype(np.int32)
+    b2_ann = (b2_spike.astype(np.int32) * T_STEPS).astype(np.int32)
+    return w1q, w2q, b1_spike, b2_spike, b1_ann, b2_ann
 
 
 def simulate_ann_int(counts: np.ndarray, labels: np.ndarray, w1q: np.ndarray,
-                     w2q: np.ndarray, hidden_shift: int) -> float:
-    h_raw = counts.astype(np.int32) @ w1q.T.astype(np.int32)
+                     w2q: np.ndarray, b1_ann: np.ndarray, b2_ann: np.ndarray,
+                     hidden_shift: int) -> float:
+    h_raw = counts.astype(np.int32) @ w1q.T.astype(np.int32) + b1_ann
     h = np.maximum(h_raw, 0) >> hidden_shift
     h = np.minimum(h, 255).astype(np.int32)
-    y = h @ w2q.T.astype(np.int32)
+    y = h @ w2q.T.astype(np.int32) + b2_ann
     pred = np.argmax(y, axis=1)
     return float((pred == labels).mean())
 
 
 def choose_ann_hidden_shift(counts: np.ndarray, labels: np.ndarray,
-                            w1q: np.ndarray, w2q: np.ndarray) -> int:
+                            w1q: np.ndarray, w2q: np.ndarray,
+                            b1_ann: np.ndarray, b2_ann: np.ndarray) -> int:
     best_shift, best_acc = 0, -1.0
     for shift in range(16):
-        acc = simulate_ann_int(counts, labels, w1q, w2q, shift)
+        acc = simulate_ann_int(counts, labels, w1q, w2q, b1_ann, b2_ann, shift)
         if acc > best_acc:
             best_shift, best_acc = shift, acc
     return best_shift
@@ -356,41 +401,64 @@ def lif_leak(mem: np.ndarray) -> np.ndarray:
     return np.where(mem > LEAK, mem - LEAK, np.where(mem > 0, 0, mem))
 
 
-def precompute_hidden_input(spikes: np.ndarray, w1q: np.ndarray) -> np.ndarray:
+def precompute_hidden_input(spikes: np.ndarray, w1q: np.ndarray,
+                            b1_spike: np.ndarray) -> np.ndarray:
     w1i = w1q.astype(np.int32)
     hin = np.zeros((spikes.shape[0], T_STEPS, N_HIDDEN), dtype=np.int32)
     for t in range(T_STEPS):
         hin[:, t, :] = spikes[:, t, :].astype(np.int32) @ w1i.T
+        hin[:, t, :] += b1_spike.astype(np.int32)
     return hin
 
 
 def simulate_snn_hin(hin: np.ndarray, labels: np.ndarray,
-                     w2q: np.ndarray, threshold: int) -> float:
+                     w2q: np.ndarray, b2_spike: np.ndarray,
+                     threshold: int, return_stats: bool = False):
     num = hin.shape[0]
     mem_h = np.zeros((num, N_HIDDEN), dtype=np.int32)
     mem_o = np.zeros((num, N_OUTPUT), dtype=np.int32)
     hidden_prev = np.zeros((num, N_HIDDEN), dtype=np.int32)
     out_count = np.zeros((num, N_OUTPUT), dtype=np.int32)
     w2i = w2q.astype(np.int32)
+    b2i = b2_spike.astype(np.int32)
+    hidden_fanout = np.count_nonzero(w2q, axis=0).astype(np.int32)
+    hidden_spikes = 0
+    hidden_deliveries = 0
+    output_spikes = 0
 
     for t in range(T_STEPS):
         mem_h = lif_leak(mem_h) + hin[:, t, :]
         hidden = mem_h >= threshold
         mem_h[hidden] = 0
 
-        oin = hidden_prev @ w2i.T
+        hidden_deliveries += int((hidden_prev * hidden_fanout).sum())
+        oin = hidden_prev @ w2i.T + b2i
         mem_o = lif_leak(mem_o) + oin
         out = mem_o >= threshold
         mem_o[out] = 0
         out_count += out.astype(np.int32)
+        hidden_spikes += int(hidden.sum())
+        output_spikes += int(out.sum())
         hidden_prev = hidden.astype(np.int32)
 
     pred = np.argmax(out_count, axis=1)
-    return float((pred == labels).mean())
+    acc = float((pred == labels).mean())
+    if not return_stats:
+        return acc
+    return acc, {
+        "hidden_spikes": hidden_spikes,
+        "hidden_deliveries": hidden_deliveries,
+        "output_spikes": output_spikes,
+    }
 
 
-def build_csr(w1q: np.ndarray, w2q: np.ndarray):
+def build_csr(w1q: np.ndarray, w2q: np.ndarray,
+              b1_spike: np.ndarray, b2_spike: np.ndarray):
     by_src = [[] for _ in range(N_TOTAL)]
+    for h in np.flatnonzero(b1_spike):
+        by_src[ID_BIAS].append((ID_HIDDEN_BASE + int(h), int(b1_spike[h])))
+    for out in np.flatnonzero(b2_spike):
+        by_src[ID_BIAS].append((ID_OUTPUT_BASE + int(out), int(b2_spike[out])))
     for h in range(N_HIDDEN):
         hid = ID_HIDDEN_BASE + h
         for src in np.flatnonzero(w1q[h]):
@@ -420,11 +488,37 @@ def write_hex(path: str, values: Iterable[int], width: int):
             f.write(f"{int(value) & mask:0{width}X}\n")
 
 
+def estimate_input_deliveries(spikes: np.ndarray, w1q: np.ndarray,
+                              b1_spike: np.ndarray, b2_spike: np.ndarray) -> int:
+    input_fanout = np.count_nonzero(w1q, axis=0).astype(np.int64)
+    input_events = spikes.sum(axis=(0, 1)).astype(np.int64)
+    bias_fanout = int(np.count_nonzero(b1_spike) + np.count_nonzero(b2_spike))
+    bias_events = int(spikes.shape[0] * T_STEPS * bias_fanout)
+    return int(input_events @ input_fanout + bias_events)
+
+
+def threshold_score(acc: float, total_deliveries: int, num_samples: int) -> float:
+    if THRESHOLD_OBJECTIVE == "accuracy":
+        return acc
+    ops_per_sample = total_deliveries / max(num_samples, 1)
+    if THRESHOLD_OBJECTIVE == "ops":
+        return acc / max(ops_per_sample, 1.0)
+    dense_ops = N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT
+    return acc - THRESHOLD_OP_PENALTY * (ops_per_sample / max(dense_ops, 1))
+
+
+def write_export_metrics(sim_dir: str, metrics: dict):
+    with open(os.path.join(sim_dir, "export_nmnist_metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2, sort_keys=True)
+
+
 def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
            counts: np.ndarray, w1q: np.ndarray, w2q: np.ndarray,
+           b1_spike: np.ndarray, b2_spike: np.ndarray,
+           b1_ann: np.ndarray, b2_ann: np.ndarray,
            threshold: int, hidden_shift: int):
     os.makedirs(sim_dir, exist_ok=True)
-    csr_dst, csr_weight, src_start, src_count = build_csr(w1q, w2q)
+    csr_dst, csr_weight, src_start, src_count = build_csr(w1q, w2q, b1_spike, b2_spike)
 
     write_hex(os.path.join(sim_dir, "csr_dst.mem"), csr_dst, 4)
     write_hex(os.path.join(sim_dir, "csr_weight.mem"), csr_weight, 2)
@@ -444,9 +538,9 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
     write_hex(os.path.join(sim_dir, "ann_pixels.mem"),
               np.minimum(counts, 255).astype(np.uint8).flatten(), 2)
     write_hex(os.path.join(sim_dir, "ann_w1.mem"), w1q.flatten(), 2)
-    write_hex(os.path.join(sim_dir, "ann_b1.mem"), np.zeros(N_HIDDEN, dtype=np.int32), 8)
+    write_hex(os.path.join(sim_dir, "ann_b1.mem"), b1_ann, 8)
     write_hex(os.path.join(sim_dir, "ann_w2.mem"), w2q.flatten(), 2)
-    write_hex(os.path.join(sim_dir, "ann_b2.mem"), np.zeros(N_OUTPUT, dtype=np.int32), 8)
+    write_hex(os.path.join(sim_dir, "ann_b2.mem"), b2_ann, 8)
 
     with open(os.path.join(sim_dir, "snn_config.vh"), "w") as f:
         label_hist = ",".join(str(int(v)) for v in np.bincount(labels, minlength=N_OUTPUT))
@@ -469,6 +563,8 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_NUM_SYN        {len(csr_dst)}\n")
         f.write(f"`define SNN_TOPK_W1        {TOPK_W1}\n")
         f.write(f"`define SNN_FINETUNE_EPOCHS {FINETUNE_EPOCHS}\n")
+        f.write(f"`define SNN_BIAS_MODE      \"{BIAS_MODE}\"\n")
+        f.write(f"`define SNN_ACTIVITY_LAMBDA {ACTIVITY_LAMBDA}\n")
         f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
         f.write("`endif\n")
@@ -485,6 +581,9 @@ def main():
     print("  N-MNIST sparse trained benchmark export")
     print(f"  network: {N_INPUT} -> {N_HIDDEN} -> {N_OUTPUT}")
     print(f"  timesteps/sample: {T_STEPS}")
+    print(f"  bias mode: {BIAS_MODE}")
+    if ACTIVITY_LAMBDA > 0.0:
+        print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     train_indices = select_indices(train_ds, NUM_TRAIN, "train")
     test_indices = select_indices(test_ds, NUM_TEST_RTL, "test")
     print(f"  train samples used: {len(train_indices)}")
@@ -506,42 +605,104 @@ def main():
         model, mask_np, train_counts, train_labels, test_counts, test_labels)
     w1_sparse = model[0].weight.detach().cpu().numpy()
     w2 = model[2].weight.detach().cpu().numpy()
-    w1q, w2q = quantize_folded(w1_sparse, w2)
+    b1 = model[0].bias.detach().cpu().numpy() if model[0].bias is not None else None
+    b2 = model[2].bias.detach().cpu().numpy() if model[2].bias is not None else None
+    w1q, w2q, b1_spike, b2_spike, b1_ann, b2_ann = quantize_folded(w1_sparse, w2, b1, b2)
 
-    hidden_shift = choose_ann_hidden_shift(train_counts, train_labels, w1q, w2q)
-    ann_acc = simulate_ann_int(test_counts, test_labels, w1q, w2q, hidden_shift)
+    hidden_shift = choose_ann_hidden_shift(train_counts, train_labels, w1q, w2q, b1_ann, b2_ann)
+    ann_acc = simulate_ann_int(test_counts, test_labels, w1q, w2q, b1_ann, b2_ann, hidden_shift)
 
     tune_n = min(TUNE_SUBSET, len(train_labels))
     eval_n = min(EVAL_SUBSET, len(test_labels))
     print("  precomputing SNN hidden inputs")
-    tune_hin = precompute_hidden_input(train_spikes[:tune_n], w1q)
-    eval_hin = precompute_hidden_input(test_spikes[:eval_n], w1q)
-    best_acc, best_thr = -1.0, None
+    tune_hin = precompute_hidden_input(train_spikes[:tune_n], w1q, b1_spike)
+    eval_hin = precompute_hidden_input(test_spikes[:eval_n], w1q, b1_spike)
+    tune_input_deliveries = estimate_input_deliveries(
+        train_spikes[:tune_n], w1q, b1_spike, b2_spike)
+    best_score, best_acc, best_ops, best_thr = -1.0, -1.0, 0, None
     for thr in THR_RANGE:
-        acc = simulate_snn_hin(tune_hin, train_labels[:tune_n], w2q, thr)
-        if acc > best_acc:
-            best_acc, best_thr = acc, thr
-    snn_acc = simulate_snn_hin(eval_hin, test_labels[:eval_n], w2q, best_thr)
+        acc, stats = simulate_snn_hin(
+            tune_hin, train_labels[:tune_n], w2q, b2_spike, thr, return_stats=True)
+        total_deliveries = tune_input_deliveries + int(stats["hidden_deliveries"])
+        score = threshold_score(acc, total_deliveries, tune_n)
+        if score > best_score or (score == best_score and acc > best_acc):
+            best_score, best_acc, best_ops, best_thr = score, acc, total_deliveries, thr
+    snn_acc, snn_stats = simulate_snn_hin(
+        eval_hin, test_labels[:eval_n], w2q, b2_spike, best_thr, return_stats=True)
+    eval_input_deliveries = estimate_input_deliveries(
+        test_spikes[:eval_n], w1q, b1_spike, b2_spike)
+    eval_deliveries = eval_input_deliveries + int(snn_stats["hidden_deliveries"])
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sim_dir = os.path.abspath(os.path.join(script_dir, "..", "sim"))
     n_syn = export(sim_dir, test_spikes, test_labels, test_counts,
-                   w1q, w2q, best_thr, hidden_shift)
+                   w1q, w2q, b1_spike, b2_spike, b1_ann, b2_ann,
+                   best_thr, hidden_shift)
 
     avg_events = float(test_spikes.sum()) / max(len(test_labels), 1)
+    metrics = {
+        "dataset": "nmnist",
+        "selection": SELECTION,
+        "label_hist": [int(v) for v in np.bincount(test_labels, minlength=N_OUTPUT)],
+        "n_input": N_INPUT,
+        "n_hidden": N_HIDDEN,
+        "n_output": N_OUTPUT,
+        "t_steps": T_STEPS,
+        "num_train": int(len(train_labels)),
+        "num_test": int(len(test_labels)),
+        "epochs": EPOCHS,
+        "finetune_epochs": FINETUNE_EPOCHS,
+        "topk_w1": TOPK_W1,
+        "bias_mode": BIAS_MODE,
+        "activity_lambda": ACTIVITY_LAMBDA,
+        "threshold_objective": THRESHOLD_OBJECTIVE,
+        "threshold": int(best_thr),
+        "threshold_tune_acc_pct": best_acc * 100.0,
+        "threshold_tune_deliveries": int(best_ops),
+        "float_train_acc_pct": train_acc * 100.0,
+        "float_test_acc_pct": test_acc * 100.0,
+        "sparse_float_train_acc_pct": sparse_train_acc * 100.0,
+        "sparse_float_test_acc_pct": sparse_test_acc * 100.0,
+        "ann_int_acc_pct": ann_acc * 100.0,
+        "ann_hidden_shift": int(hidden_shift),
+        "snn_eval_acc_pct": snn_acc * 100.0,
+        "snn_eval_deliveries": int(eval_deliveries),
+        "snn_eval_deliveries_per_sample": float(eval_deliveries / max(eval_n, 1)),
+        "snn_eval_hidden_spikes": int(snn_stats["hidden_spikes"]),
+        "snn_eval_output_spikes": int(snn_stats["output_spikes"]),
+        "csr_synapses": int(n_syn),
+        "bias_hidden_synapses": int(np.count_nonzero(b1_spike)),
+        "bias_output_synapses": int(np.count_nonzero(b2_spike)),
+        "avg_binned_input_events_per_sample": avg_events,
+        "dense_ann_macs_per_sample": N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT,
+        "dense_to_sparse_storage_ratio": (
+            (N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT) / max(n_syn, 1)
+        ),
+    }
+    metrics["accuracy_per_ksynapse"] = metrics["snn_eval_acc_pct"] / max(n_syn / 1000.0, 1e-9)
+    metrics["accuracy_per_kdelivery"] = (
+        metrics["snn_eval_acc_pct"] / max(metrics["snn_eval_deliveries_per_sample"] / 1000.0, 1e-9)
+    )
+    write_export_metrics(sim_dir, metrics)
+
     print("=" * 64)
     print("  N-MNIST export complete")
     print(f"  float count MLP train/test accuracy: {train_acc * 100:.2f}% / {test_acc * 100:.2f}%")
     print(f"  sparse float MLP train/test accuracy: {sparse_train_acc * 100:.2f}% / {sparse_test_acc * 100:.2f}%")
     print(f"  sparse W1 top-k per hidden neuron: {TOPK_W1}")
     print(f"  sparse finetune epochs: {FINETUNE_EPOCHS}")
+    print(f"  bias mode: {BIAS_MODE}  hidden/output bias synapses: {np.count_nonzero(b1_spike)} / {np.count_nonzero(b2_spike)}")
+    if ACTIVITY_LAMBDA > 0.0:
+        print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")
     print(f"  sparse INT8 ANN hidden shift: {hidden_shift}")
-    print(f"  sparse SNN threshold: {best_thr}")
+    print(f"  sparse SNN threshold: {best_thr}  objective={THRESHOLD_OBJECTIVE}")
     print(f"  sparse SNN eval accuracy ({eval_n} samples): {snn_acc * 100:.2f}%")
+    print(f"  SNN estimated deliveries/sample ({eval_n} samples): {eval_deliveries / max(eval_n, 1):.2f}")
     print(f"  CSR synapses: {n_syn}")
     print(f"  average binned input events/sample: {avg_events:.2f}")
     print(f"  dense ANN MACs/sample: {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}")
+    print(f"  export metrics: {os.path.join(sim_dir, 'export_nmnist_metrics.json')}")
     print(f"  exported to: {sim_dir}")
     print("=" * 64)
 

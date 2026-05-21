@@ -101,6 +101,36 @@ python3 tools/bench.py export nmnist --set NMNIST_TOPK_W1=128 --set NMNIST_FINET
 python3 tools/bench.py export nmnist --set NMNIST_TOPK_W1=256 --set NMNIST_FINETUNE_EPOCHS=20
 ```
 
+For algorithmic tuning before spending time on RTL/synthesis, run the
+export-only tuner. It trains/exports each point, reads
+`sim/export_nmnist_metrics.json`, and ranks candidates by accuracy, synapses,
+and estimated synapse deliveries:
+
+```bash
+# Small sanity sweep.
+python3 tools/tune_nmnist.py --preset quick --snapshot
+
+# Broader edge-efficiency sweep.
+python3 tools/tune_nmnist.py --preset edge --snapshot --out results/nmnist_tune_edge/summary.csv
+
+# Override or add exact knobs.
+python3 tools/tune_nmnist.py \
+  --grid NMNIST_T_STEPS=40,50 \
+  --grid NMNIST_TOPK_W1=96,128,160 \
+  --grid NMNIST_BIAS_MODE=none,hidden \
+  --grid NMNIST_ACTIVITY_LAMBDA=0,0.0001
+```
+
+Useful N-MNIST exporter knobs:
+
+- `NMNIST_BIAS_MODE=none|hidden|all`: use the already-injected bias neuron for
+  hidden and optionally output bias currents.
+- `NMNIST_ACTIVITY_LAMBDA=<float>`: adds a hidden-activation penalty during
+  sparse finetune to trade accuracy for fewer hidden spikes/deliveries.
+- `NMNIST_THR_MIN`, `NMNIST_THR_MAX`, `NMNIST_THR_STEP`: threshold search range.
+- `NMNIST_THRESHOLD_OBJECTIVE=accuracy|ops|edge`: threshold selection objective.
+  `edge` uses `NMNIST_THRESHOLD_OP_PENALTY` to mildly penalize delivery count.
+
 Current benchmark targets:
 
 - `mnist`: frame MNIST rate-coded SNN sanity check.

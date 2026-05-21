@@ -204,7 +204,17 @@ def main() -> None:
         print("=" * 86)
         print(f"Report tag={tag}")
         print(f"Config source: {config_path(tag).name}")
-        for key in ["SNN_DATASET", "SNN_SELECTION", "SNN_LABEL_HIST", "SNN_T_STEPS", "SNN_NUM_SYN"]:
+        for key in [
+            "SNN_DATASET",
+            "SNN_SELECTION",
+            "SNN_LABEL_HIST",
+            "SNN_T_STEPS",
+            "SNN_TOPK_W1",
+            "SNN_FINETUNE_EPOCHS",
+            "SNN_BIAS_MODE",
+            "SNN_ACTIVITY_LAMBDA",
+            "SNN_NUM_SYN",
+        ]:
             if key in cfg:
                 print(f"{key}: {cfg[key]}")
         print("=" * 86)
