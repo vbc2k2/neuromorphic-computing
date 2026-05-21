@@ -208,6 +208,7 @@ module top_event_ram #(
             fifo_pop = 1'b1;
     end
 
+    integer reset_i;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state              <= S_IDLE;
@@ -224,6 +225,10 @@ module top_event_ram #(
             total_spikes_fired <= '0;
             router_events      <= '0;
             router_deliveries  <= '0;
+            for (reset_i = 0; reset_i < NUM_NEURONS; reset_i++) begin
+                membrane[reset_i]   <= '0;
+                weight_sum[reset_i] <= '0;
+            end
         end else begin
             state         <= state_next;
             cycle_count   <= cycle_count + 1;
