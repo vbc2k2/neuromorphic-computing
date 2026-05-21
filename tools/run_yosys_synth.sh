@@ -82,7 +82,7 @@ run_event() {
         case "$FLOW" in
             generic)
                 yosys -l "$log" -p "
-                    read_verilog -sv -defer ../rtl/neuron_core.sv ../rtl/synapse_csr.sv ../rtl/spike_router.sv ../rtl/top.sv
+                    read_verilog -sv -defer -DYOSYS ../rtl/neuron_core.sv ../rtl/synapse_csr.sv ../rtl/spike_router.sv ../rtl/top.sv
                     hierarchy -top top \
                         -chparam NUM_NEURONS $N_TOTAL \
                         -chparam THRESHOLD $THRESHOLD \
@@ -94,7 +94,7 @@ run_event() {
                 ;;
             xilinx)
                 yosys -l "$log" -p "
-                    read_verilog -sv -defer ../rtl/neuron_core.sv ../rtl/synapse_csr.sv ../rtl/spike_router.sv ../rtl/top.sv
+                    read_verilog -sv -defer -DYOSYS ../rtl/neuron_core.sv ../rtl/synapse_csr.sv ../rtl/spike_router.sv ../rtl/top.sv
                     hierarchy -top top \
                         -chparam NUM_NEURONS $N_TOTAL \
                         -chparam THRESHOLD $THRESHOLD \

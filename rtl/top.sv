@@ -49,7 +49,11 @@ module top #(
 
     // Output spike monitoring
     output logic [NUM_NEURONS-1:0]      neuron_spikes,
+`ifdef YOSYS
+    output logic [NUM_NEURONS*MEMBRANE_WIDTH-1:0] debug_membrane_flat,
+`else
     output logic signed [MEMBRANE_WIDTH-1:0] debug_membrane [NUM_NEURONS],
+`endif
 
     // Performance counters
     output logic [31:0]                 cycle_count,        // free-running
@@ -149,6 +153,7 @@ module top #(
     state_t state, state_next;
 
     logic [NUM_NEURONS-1:0] neuron_fired;
+    logic signed [MEMBRANE_WIDTH-1:0] debug_membrane_i [NUM_NEURONS];
     logic [NUM_NEURONS-1:0] cap_bits;        // fired neurons pending feedback
     logic                   timestep_tick;
 
@@ -244,6 +249,13 @@ module top #(
             assign neuron_spike_in_valid =
                 deliver_valid && (deliver_dst_id == ID_WIDTH'(g));
 
+`ifdef YOSYS
+            assign debug_membrane_flat[g*MEMBRANE_WIDTH +: MEMBRANE_WIDTH] =
+                debug_membrane_i[g];
+`else
+            assign debug_membrane[g] = debug_membrane_i[g];
+`endif
+
             neuron_core #(
                 .WEIGHT_WIDTH   (WEIGHT_WIDTH),
                 .MEMBRANE_WIDTH (MEMBRANE_WIDTH),
@@ -257,7 +269,7 @@ module top #(
                 .spike_weight       (deliver_weight),
                 .timestep_tick      (timestep_tick),
                 .spike_out          (neuron_fired[g]),
-                .membrane_potential (debug_membrane[g])
+                .membrane_potential (debug_membrane_i[g])
             );
         end
     endgenerate
