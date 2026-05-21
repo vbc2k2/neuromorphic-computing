@@ -9,11 +9,12 @@
 # Examples:
 #   bash tools/run_yosys_synth.sh _nmnist_pipe all generic
 #   bash tools/run_yosys_synth.sh _nmnist_pipe event xilinx
+#   bash tools/run_yosys_synth.sh _nmnist_pipe event_ram xilinx
 #
 # Arguments:
 #   tag     matches the Verilator/bench tag. Uses sim/snn_config${tag}.vh when
 #           present, otherwise sim/snn_config.vh.
-#   design  event, ann, or all.
+#   design  event, event_ram, ann, or all.
 #   flow    generic: technology-independent memory-aware stats.
 #           xilinx:  synth_xilinx LUT/FF/BRAM/DSP estimate, excluding I/O pads.
 # ============================================================================
@@ -154,10 +155,55 @@ run_ann() {
     echo "[yosys-ann$TAG] wrote $log"
 }
 
+run_event_ram() {
+    for v in N_TOTAL THRESHOLD LEAK NUM_SYN; do
+        require_cfg "$v"
+    done
+
+    local log="$RESULTS/yosys_event_ram${TAG}_${FLOW}.log"
+    echo "[yosys-event-ram$TAG] flow=$FLOW config=$(basename "$CFG")"
+    (
+        cd "$SIM"
+        case "$FLOW" in
+            generic)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram.sv
+                    hierarchy -top top_event_ram \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+                    proc; opt; memory -nomap; opt; stat
+                "
+                ;;
+            xilinx)
+                yosys -l "$log" -p "
+                    read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram.sv
+                    hierarchy -top top_event_ram \
+                        -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam THRESHOLD $THRESHOLD \
+                        -chparam LEAK $LEAK \
+                        -chparam NUM_SYN $NUM_SYN \
+                        -chparam FIFO_DEPTH 4096
+                    synth_xilinx -family xc7 -noiopad
+                    stat
+                "
+                ;;
+            *)
+                echo "ERROR: unknown flow '$FLOW' (use generic or xilinx)" >&2
+                exit 1
+                ;;
+        esac
+    )
+    echo "[yosys-event-ram$TAG] wrote $log"
+}
+
 case "$DESIGN" in
-    event) run_event ;;
-    ann)   run_ann ;;
-    all)   run_event; run_ann ;;
+    event)     run_event ;;
+    event_ram) run_event_ram ;;
+    ann)       run_ann ;;
+    all)       run_event; run_ann ;;
     *)
         echo "ERROR: unknown design '$DESIGN' (use event, ann, or all)" >&2
         exit 1

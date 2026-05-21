@@ -32,11 +32,19 @@ python3 tools/bench.py run nmnist --design ann --last 49
 python3 tools/bench.py summarize nmnist
 ```
 
+Run the area-oriented RAM-state event prototype:
+
+```bash
+python3 tools/bench.py run nmnist --design event_ram --tag _nmnist_t50_k128_ram --max-cycles 200000000
+python3 tools/bench.py summarize nmnist --tag _nmnist_t50_k128_ram
+```
+
 Run open-source synthesis/stat estimates after a tagged RTL run:
 
 ```bash
 bash tools/run_yosys_synth.sh _nmnist_pipe all generic
 bash tools/run_yosys_synth.sh _nmnist_pipe all xilinx
+bash tools/run_yosys_synth.sh _nmnist_pipe event_ram xilinx
 ```
 
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it

@@ -1,4 +1,10 @@
+#ifndef EVENT_TOP_HEADER
 #include "Vtop.h"
+using EventTop = Vtop;
+#else
+#include EVENT_TOP_HEADER
+using EventTop = EVENT_TOP_CLASS;
+#endif
 #include "verilated.h"
 
 #include <algorithm>
@@ -30,6 +36,9 @@
 #endif
 #ifndef SNN_T_STEPS
 #error "SNN_T_STEPS must be passed with -DSNN_T_STEPS=<value>"
+#endif
+#ifndef EVENT_DESIGN_NAME
+#define EVENT_DESIGN_NAME "event_driven_verilator"
 #endif
 
 namespace {
@@ -140,11 +149,11 @@ bool spike_word_bit(const std::string& word, int pixel) {
     return word[N_INPUT - 1 - pixel] == '1';
 }
 
-bool output_spike_bit(const Vtop& top, int neuron_id) {
+bool output_spike_bit(const EventTop& top, int neuron_id) {
     return ((top.neuron_spikes[neuron_id / 32] >> (neuron_id % 32)) & 1U) != 0;
 }
 
-void count_output_spikes(const Vtop& top, std::vector<int>& out_count) {
+void count_output_spikes(const EventTop& top, std::vector<int>& out_count) {
     for (int o = 0; o < N_OUTPUT; ++o) {
         if (output_spike_bit(top, OUT_BASE + o)) {
             ++out_count[o];
@@ -152,7 +161,7 @@ void count_output_spikes(const Vtop& top, std::vector<int>& out_count) {
     }
 }
 
-void tick(Vtop& top, std::vector<int>* out_count = nullptr) {
+void tick(EventTop& top, std::vector<int>* out_count = nullptr) {
     top.clk = 0;
     top.eval();
     top.clk = 1;
@@ -162,7 +171,7 @@ void tick(Vtop& top, std::vector<int>* out_count = nullptr) {
     }
 }
 
-void reset(Vtop& top) {
+void reset(EventTop& top) {
     top.rst_n = 0;
     top.ext_spike_id = 0;
     top.ext_spike_valid = 0;
@@ -172,7 +181,7 @@ void reset(Vtop& top) {
     for (int i = 0; i < 2; ++i) tick(top);
 }
 
-void inject_spike(Vtop& top, int neuron_id, std::vector<int>& out_count, int& cycles) {
+void inject_spike(EventTop& top, int neuron_id, std::vector<int>& out_count, int& cycles) {
     top.ext_spike_id = neuron_id;
     top.ext_spike_valid = 1;
     tick(top, &out_count);
@@ -182,7 +191,7 @@ void inject_spike(Vtop& top, int neuron_id, std::vector<int>& out_count, int& cy
     ++cycles;
 }
 
-void run_step(Vtop& top, std::vector<int>& out_count, int& cycles,
+void run_step(EventTop& top, std::vector<int>& out_count, int& cycles,
               int max_cycles_per_image, int image_index) {
     top.start_step = 1;
     tick(top, &out_count);
@@ -221,7 +230,7 @@ int argmax_first(const std::vector<int>& values) {
     return best_idx;
 }
 
-int classify(Vtop& top, const std::vector<std::string>& spike_words, int image_index,
+int classify(EventTop& top, const std::vector<std::string>& spike_words, int image_index,
              int max_cycles_per_image) {
     reset(top);
     std::vector<int> out_count(N_OUTPUT, 0);
@@ -267,7 +276,7 @@ int main(int argc, char** argv) {
     std::ofstream classify_csv("classify_event" + tag + ".csv");
     classify_csv << "image,label,prediction,correct,active_cycles,deliveries,spikes\n";
 
-    Vtop top;
+    EventTop top;
     reset(top);
 
     long long total_active = 0;
@@ -308,7 +317,7 @@ int main(int argc, char** argv) {
 
     std::ofstream metrics_csv("metrics_classify_event" + tag + ".csv");
     metrics_csv << "metric,value\n";
-    metrics_csv << "design,event_driven_verilator\n";
+    metrics_csv << "design," << EVENT_DESIGN_NAME << "\n";
     metrics_csv << "first_image," << first << "\n";
     metrics_csv << "last_image," << last << "\n";
     metrics_csv << "num_images," << nrun << "\n";
