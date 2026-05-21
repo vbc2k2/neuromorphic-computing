@@ -64,6 +64,13 @@ ASIC_LIBERTY=/path/to/sky130_fd_sc_hd__tt_025C_1v80.lib \
 The ASIC mode is not a routed/post-layout result. It keeps SRAM-like memories
 abstract, so compare logic area separately from model/state memory bits.
 
+Generate one combined report for a tag:
+
+```bash
+python3 tools/report.py --tag _nmnist_t50_k128_bram --event-design event_ram
+python3 tools/report.py --tag _nmnist_t50_k128_bram --event-design event_ram --format md
+```
+
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
 exists, runs from `sim/` so `$readmemh` files resolve correctly, and applies the
 same parameters used by the Verilator benchmark.
@@ -89,3 +96,40 @@ Current benchmark targets:
 - `sparse`: controlled sparse-event microbenchmark.
 - `shd`: public spike-audio dataset; hard for the current count model.
 - `nmnist`: public event-camera digit dataset.
+
+Suggested benchmark set for architecture reporting:
+
+```bash
+# Controlled best-case sparse-event scaling sanity check.
+python3 tools/bench.py export sparse
+python3 tools/bench.py run sparse --design event_ram --tag _sparse_report --max-cycles 100000000
+python3 tools/bench.py run sparse --design ann --tag _sparse_report
+bash tools/run_yosys_synth.sh _sparse_report event_ram xilinx
+python3 tools/report.py --tag _sparse_report --event-design event_ram
+
+# N-MNIST efficiency point: strong storage/op/area win, lower accuracy.
+python3 tools/bench.py export nmnist \
+  --set NMNIST_T_STEPS=50 \
+  --set NMNIST_TOPK_W1=128 \
+  --set NMNIST_FINETUNE_EPOCHS=12
+python3 tools/bench.py run nmnist --design event_ram --tag _nmnist_t50_k128_bram --max-cycles 300000000
+python3 tools/bench.py run nmnist --design ann --tag _nmnist_t50_k128_bram
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram event_ram xilinx
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram ann xilinx
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram event_ram asic
+bash tools/run_yosys_synth.sh _nmnist_t50_k128_bram ann asic
+python3 tools/report.py --tag _nmnist_t50_k128_bram --event-design event_ram
+
+# N-MNIST higher-accuracy sparse point.
+python3 tools/bench.py export nmnist \
+  --set NMNIST_T_STEPS=50 \
+  --set NMNIST_TOPK_W1=192 \
+  --set NMNIST_FINETUNE_EPOCHS=20
+python3 tools/bench.py run nmnist --design event_ram --tag _nmnist_t50_k192_e20_bram --max-cycles 400000000
+python3 tools/bench.py run nmnist --design ann --tag _nmnist_t50_k192_e20_bram
+bash tools/run_yosys_synth.sh _nmnist_t50_k192_e20_bram event_ram xilinx
+bash tools/run_yosys_synth.sh _nmnist_t50_k192_e20_bram ann xilinx
+bash tools/run_yosys_synth.sh _nmnist_t50_k192_e20_bram event_ram asic
+bash tools/run_yosys_synth.sh _nmnist_t50_k192_e20_bram ann asic
+python3 tools/report.py --tag _nmnist_t50_k192_e20_bram --event-design event_ram
+```
