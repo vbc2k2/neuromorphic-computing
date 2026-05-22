@@ -40,6 +40,9 @@ using EventTop = EVENT_TOP_CLASS;
 #ifndef EVENT_DESIGN_NAME
 #define EVENT_DESIGN_NAME "event_driven_verilator"
 #endif
+#ifndef SNN_MEMBRANE_WIDTH
+#define SNN_MEMBRANE_WIDTH 16
+#endif
 
 namespace {
 
@@ -49,6 +52,7 @@ constexpr int N_OUTPUT = SNN_N_OUTPUT;
 constexpr int ID_BIAS = SNN_ID_BIAS;
 constexpr int OUT_BASE = SNN_ID_OUTPUT_BASE;
 constexpr int T_STEPS = SNN_T_STEPS;
+constexpr int MEMBRANE_WIDTH = SNN_MEMBRANE_WIDTH;
 constexpr int SPIKE_WORDS = (N_TOTAL + 31) / 32;
 using Clock = std::chrono::steady_clock;
 
@@ -176,6 +180,10 @@ void reset(EventTop& top) {
     top.ext_spike_id = 0;
     top.ext_spike_valid = 0;
     top.start_step = 0;
+#ifdef EVENT_SCORE_READOUT
+    top.score_read_idx = 0;
+    top.score_read_en = 0;
+#endif
     for (int i = 0; i < 4; ++i) tick(top);
     top.rst_n = 1;
     for (int i = 0; i < 2; ++i) tick(top);
@@ -238,6 +246,37 @@ int argmax_first(const std::vector<int>& values) {
     return best_idx;
 }
 
+int sign_extend(uint32_t value, int width) {
+    if (width <= 0 || width >= 32) {
+        return static_cast<int>(value);
+    }
+    const uint32_t sign = 1u << (width - 1);
+    const uint32_t mask = (1u << width) - 1u;
+    value &= mask;
+    return static_cast<int>((value ^ sign) - sign);
+}
+
+#ifdef EVENT_SCORE_READOUT
+std::vector<int> read_output_scores(EventTop& top, int& cycles) {
+    std::vector<int> scores(N_OUTPUT, 0);
+    for (int o = 0; o < N_OUTPUT; ++o) {
+        top.score_read_idx = o;
+        top.score_read_en = 1;
+        tick(top);
+        ++cycles;
+        top.score_read_en = 0;
+        tick(top);
+        ++cycles;
+        if (!top.score_read_valid) {
+            tick(top);
+            ++cycles;
+        }
+        scores[o] = sign_extend(static_cast<uint32_t>(top.score_read_data), MEMBRANE_WIDTH);
+    }
+    return scores;
+}
+#endif
+
 int classify(EventTop& top, const std::vector<std::string>& spike_words, int image_index,
              int max_cycles_per_image) {
     reset(top);
@@ -256,7 +295,12 @@ int classify(EventTop& top, const std::vector<std::string>& spike_words, int ima
     }
 
     tick(top);
+#ifdef EVENT_SCORE_READOUT
+    const auto scores = read_output_scores(top, cycles);
+    return argmax_first(scores);
+#else
     return argmax_first(out_count);
+#endif
 }
 
 }  // namespace
@@ -332,6 +376,11 @@ int main(int argc, char** argv) {
     metrics_csv << "correct," << correct << "\n";
     metrics_csv << "accuracy_pct," << std::fixed << std::setprecision(2)
                 << (100.0 * correct / std::max(nrun, 1)) << "\n";
+#ifdef EVENT_SCORE_READOUT
+    metrics_csv << "readout,membrane\n";
+#else
+    metrics_csv << "readout,spike_count\n";
+#endif
     metrics_csv << "active_cycles," << total_active << "\n";
     metrics_csv << "synapse_ops," << total_deliveries << "\n";
     metrics_csv << "router_events," << total_events << "\n";

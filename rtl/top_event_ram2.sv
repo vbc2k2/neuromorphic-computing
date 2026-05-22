@@ -10,6 +10,8 @@
 
 module top_event_ram2 #(
     parameter int NUM_NEURONS    = 139,
+    parameter int NUM_OUTPUT     = 10,
+    parameter int ID_OUTPUT_BASE = 129,
     parameter int WEIGHT_WIDTH   = 8,
     parameter int MEMBRANE_WIDTH = 16,
     parameter int THRESHOLD      = 210,
@@ -31,6 +33,11 @@ module top_event_ram2 #(
     output logic                        step_busy,
 
     output logic [NUM_NEURONS-1:0]      neuron_spikes,
+
+    input  logic [$clog2(NUM_OUTPUT)-1:0] score_read_idx,
+    input  logic                        score_read_en,
+    output logic                        score_read_valid,
+    output logic signed [MEMBRANE_WIDTH-1:0] score_read_data,
 
     output logic [31:0]                 cycle_count,
     output logic [31:0]                 active_cycles,
@@ -239,6 +246,11 @@ module top_event_ram2 #(
     logic scan_odd_push;
     logic scan_both_fire;
     logic [1:0] scan_fire_count;
+    logic score_read_pending;
+    logic score_read_bank;
+    logic [ID_WIDTH-1:0] score_read_id;
+
+    assign score_read_id = ID_WIDTH'(ID_OUTPUT_BASE) + ID_WIDTH'(score_read_idx);
 
     assign step_busy      = (state != S_IDLE);
     assign csr_ptr_src    = current_src;
@@ -253,6 +265,19 @@ module top_event_ram2 #(
     assign clear_last     = (clear_idx == BANK_ADDR_WIDTH'(BANK0_DEPTH - 1));
     assign scan_last      = (scan_idx == BANK_ADDR_WIDTH'(BANK0_DEPTH - 1));
 
+    function automatic logic
+        is_output_id(input logic [ID_WIDTH-1:0] neuron_id);
+        logic [ID_EXT_WIDTH-1:0] id_ext;
+        logic [ID_EXT_WIDTH-1:0] out_base_ext;
+        logic [ID_EXT_WIDTH-1:0] out_end_ext;
+        begin
+            id_ext       = {1'b0, neuron_id};
+            out_base_ext = ID_EXT_WIDTH'(ID_OUTPUT_BASE);
+            out_end_ext  = ID_EXT_WIDTH'(ID_OUTPUT_BASE + NUM_OUTPUT);
+            is_output_id = (id_ext >= out_base_ext) && (id_ext < out_end_ext);
+        end
+    endfunction
+
     always_comb begin
         even_leaked      = leak_value(mem0_rd_data);
         even_integrated  = even_leaked + ws0_rd_data;
@@ -263,8 +288,8 @@ module top_event_ram2 #(
         odd_fired        = scan_odd_valid &&
                            (odd_integrated >= MEMBRANE_WIDTH'(signed'(THRESHOLD)));
 
-        scan_even_push   = even_fired;
-        scan_odd_push    = scan_odd_valid && odd_fired;
+        scan_even_push   = even_fired && !is_output_id(scan_even_id);
+        scan_odd_push    = scan_odd_valid && odd_fired && !is_output_id(scan_odd_id);
         scan_both_fire   = scan_even_push && scan_odd_push;
         scan_fire_count  = {1'b0, scan_even_push} + {1'b0, scan_odd_push};
     end
@@ -347,6 +372,13 @@ module top_event_ram2 #(
         ws1_wr_data  = '0;
 
         case (state)
+            S_IDLE: begin
+                mem0_rd_en   = score_read_en && !score_read_id[0];
+                mem0_rd_addr = bank_addr(score_read_id);
+                mem1_rd_en   = score_read_en && score_read_id[0];
+                mem1_rd_addr = bank_addr(score_read_id);
+            end
+
             S_CLEAR: begin
                 mem0_wr_en   = 1'b1;
                 mem0_wr_addr = clear_idx;
@@ -397,14 +429,14 @@ module top_event_ram2 #(
             S_SCAN_WRITE: begin
                 mem0_wr_en   = 1'b1;
                 mem0_wr_addr = scan_idx;
-                mem0_wr_data = even_fired ? '0 : even_integrated;
+                mem0_wr_data = (even_fired && !is_output_id(scan_even_id)) ? '0 : even_integrated;
                 ws0_wr_en    = 1'b1;
                 ws0_wr_addr  = scan_idx;
                 ws0_wr_data  = '0;
 
                 mem1_wr_en   = scan_odd_valid;
                 mem1_wr_addr = scan_idx;
-                mem1_wr_data = odd_fired ? '0 : odd_integrated;
+                mem1_wr_data = (odd_fired && !is_output_id(scan_odd_id)) ? '0 : odd_integrated;
                 ws1_wr_en    = scan_odd_valid;
                 ws1_wr_addr  = scan_idx;
                 ws1_wr_data  = '0;
@@ -432,10 +464,19 @@ module top_event_ram2 #(
             total_spikes_fired <= '0;
             router_events      <= '0;
             router_deliveries  <= '0;
+            score_read_valid   <= 1'b0;
+            score_read_data    <= '0;
+            score_read_pending <= 1'b0;
+            score_read_bank    <= 1'b0;
         end else begin
             state         <= state_next;
             cycle_count   <= cycle_count + 32'd1;
             neuron_spikes <= '0;
+            score_read_valid <= score_read_pending;
+            if (score_read_pending)
+                score_read_data <= score_read_bank ? mem1_rd_data : mem0_rd_data;
+            score_read_pending <= (state == S_IDLE) && score_read_en;
+            score_read_bank    <= score_read_id[0];
 
             if (state != S_IDLE && state != S_CLEAR)
                 active_cycles <= active_cycles + 32'd1;
@@ -485,9 +526,9 @@ module top_event_ram2 #(
                 end
 
                 S_SCAN_WRITE: begin
-                    if (even_fired)
+                    if (even_fired && !is_output_id(scan_even_id))
                         neuron_spikes[scan_even_id] <= 1'b1;
-                    if (scan_odd_push)
+                    if (scan_odd_push && !is_output_id(scan_odd_id))
                         neuron_spikes[scan_odd_id] <= 1'b1;
 
                     total_spikes_fired <= total_spikes_fired + {30'd0, scan_fire_count};

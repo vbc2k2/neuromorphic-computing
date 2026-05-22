@@ -212,6 +212,7 @@ def main() -> None:
             "SNN_TOPK_W1",
             "SNN_FINETUNE_EPOCHS",
             "SNN_BIAS_MODE",
+            "SNN_READOUT",
             "SNN_ACTIVITY_LAMBDA",
             "SNN_NUM_SYN",
         ]:

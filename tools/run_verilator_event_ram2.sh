@@ -66,6 +66,8 @@ cd "$ROOT"
 verilator -sv --cc \
     --Mdir "$OBJDIR" \
     -GNUM_NEURONS="$N_TOTAL" \
+    -GNUM_OUTPUT="$N_OUTPUT" \
+    -GID_OUTPUT_BASE="$OUT_BASE" \
     -GTHRESHOLD="$THRESHOLD" \
     -GLEAK="$LEAK" \
     -GNUM_SYN="$NUM_SYN" \
@@ -74,7 +76,7 @@ verilator -sv --cc \
     "$RTL/top_event_ram2.sv" \
     --top-module top_event_ram2 \
     --exe "$ROOT/tools/verilator_event_main.cpp" \
-    -CFLAGS "-std=c++17 -DEVENT_TOP_HEADER=\\\"Vtop_event_ram2.h\\\" -DEVENT_TOP_CLASS=Vtop_event_ram2 -DEVENT_DESIGN_NAME=\\\"event_ram2_verilator\\\" -DSNN_N_TOTAL=$N_TOTAL -DSNN_N_INPUT=$N_INPUT -DSNN_N_OUTPUT=$N_OUTPUT -DSNN_ID_BIAS=$ID_BIAS -DSNN_ID_OUTPUT_BASE=$OUT_BASE -DSNN_T_STEPS=$T_STEPS"
+    -CFLAGS "-std=c++17 -DEVENT_TOP_HEADER=\\\"Vtop_event_ram2.h\\\" -DEVENT_TOP_CLASS=Vtop_event_ram2 -DEVENT_DESIGN_NAME=\\\"event_ram2_membrane_verilator\\\" -DEVENT_SCORE_READOUT -DSNN_N_TOTAL=$N_TOTAL -DSNN_N_INPUT=$N_INPUT -DSNN_N_OUTPUT=$N_OUTPUT -DSNN_ID_BIAS=$ID_BIAS -DSNN_ID_OUTPUT_BASE=$OUT_BASE -DSNN_T_STEPS=$T_STEPS -DSNN_MEMBRANE_WIDTH=16"
 make -C "$OBJDIR" -f Vtop_event_ram2.mk -j "${VERILATOR_JOBS:-1}"
 
 echo "[verilator-event-ram2$TAG] images $FIRST..$LAST  ($(date))"

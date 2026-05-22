@@ -60,6 +60,7 @@ N_TOTAL="$(cfg SNN_N_TOTAL)"
 N_INPUT="$(cfg SNN_N_INPUT)"
 N_HIDDEN="$(cfg SNN_N_HIDDEN)"
 N_OUTPUT="$(cfg SNN_N_OUTPUT)"
+OUT_BASE="$(cfg SNN_ID_OUTPUT_BASE)"
 THRESHOLD="$(cfg SNN_THRESHOLD)"
 LEAK="$(cfg SNN_LEAK)"
 NUM_SYN="$(cfg SNN_NUM_SYN)"
@@ -274,7 +275,7 @@ $(asic_steps)
 }
 
 run_event_ram2() {
-    for v in N_TOTAL THRESHOLD LEAK NUM_SYN; do
+    for v in N_TOTAL N_OUTPUT OUT_BASE THRESHOLD LEAK NUM_SYN; do
         require_cfg "$v"
     done
 
@@ -289,6 +290,8 @@ run_event_ram2() {
                     read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
                     hierarchy -top top_event_ram2 \
                         -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam NUM_OUTPUT $N_OUTPUT \
+                        -chparam ID_OUTPUT_BASE $OUT_BASE \
                         -chparam THRESHOLD $THRESHOLD \
                         -chparam LEAK $LEAK \
                         -chparam NUM_SYN $NUM_SYN \
@@ -301,6 +304,8 @@ run_event_ram2() {
                     read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
                     hierarchy -top top_event_ram2 \
                         -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam NUM_OUTPUT $N_OUTPUT \
+                        -chparam ID_OUTPUT_BASE $OUT_BASE \
                         -chparam THRESHOLD $THRESHOLD \
                         -chparam LEAK $LEAK \
                         -chparam NUM_SYN $NUM_SYN \
@@ -314,6 +319,8 @@ run_event_ram2() {
                     read_verilog -sv -defer -DYOSYS ../rtl/synapse_csr.sv ../rtl/top_event_ram2.sv
                     hierarchy -top top_event_ram2 \
                         -chparam NUM_NEURONS $N_TOTAL \
+                        -chparam NUM_OUTPUT $N_OUTPUT \
+                        -chparam ID_OUTPUT_BASE $OUT_BASE \
                         -chparam THRESHOLD $THRESHOLD \
                         -chparam LEAK $LEAK \
                         -chparam NUM_SYN $NUM_SYN \

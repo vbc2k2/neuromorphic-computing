@@ -52,6 +52,7 @@ BATCH_SIZE = int(os.environ.get("NMNIST_BATCH_SIZE", "128"))
 TOPK_W1 = int(os.environ.get("NMNIST_TOPK_W1", "128"))
 FINETUNE_EPOCHS = int(os.environ.get("NMNIST_FINETUNE_EPOCHS", "12"))
 BIAS_MODE = os.environ.get("NMNIST_BIAS_MODE", "none").lower()
+READOUT = os.environ.get("NMNIST_READOUT", "membrane").lower()
 ACTIVITY_LAMBDA = float(os.environ.get("NMNIST_ACTIVITY_LAMBDA", "0.0"))
 
 THR_MIN = int(os.environ.get("NMNIST_THR_MIN", "20"))
@@ -69,6 +70,8 @@ SELECTION = os.environ.get("NMNIST_SELECTION", "balanced")
 
 if BIAS_MODE not in {"none", "hidden", "all"}:
     raise SystemExit("NMNIST_BIAS_MODE must be one of: none, hidden, all")
+if READOUT not in {"spike", "membrane"}:
+    raise SystemExit("NMNIST_READOUT must be one of: spike, membrane")
 if THRESHOLD_OBJECTIVE not in {"accuracy", "ops", "edge"}:
     raise SystemExit("NMNIST_THRESHOLD_OBJECTIVE must be one of: accuracy, ops, edge")
 if THR_STEP <= 0:
@@ -434,14 +437,17 @@ def simulate_snn_hin(hin: np.ndarray, labels: np.ndarray,
         hidden_deliveries += int((hidden_prev * hidden_fanout).sum())
         oin = hidden_prev @ w2i.T + b2i
         mem_o = lif_leak(mem_o) + oin
-        out = mem_o >= threshold
-        mem_o[out] = 0
-        out_count += out.astype(np.int32)
+        if READOUT == "spike":
+            out = mem_o >= threshold
+            mem_o[out] = 0
+            out_count += out.astype(np.int32)
+            output_spikes += int(out.sum())
+        else:
+            out = np.zeros_like(mem_o, dtype=bool)
         hidden_spikes += int(hidden.sum())
-        output_spikes += int(out.sum())
         hidden_prev = hidden.astype(np.int32)
 
-    pred = np.argmax(out_count, axis=1)
+    pred = np.argmax(out_count if READOUT == "spike" else mem_o, axis=1)
     acc = float((pred == labels).mean())
     if not return_stats:
         return acc
@@ -564,6 +570,7 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_TOPK_W1        {TOPK_W1}\n")
         f.write(f"`define SNN_FINETUNE_EPOCHS {FINETUNE_EPOCHS}\n")
         f.write(f"`define SNN_BIAS_MODE      \"{BIAS_MODE}\"\n")
+        f.write(f"`define SNN_READOUT        \"{READOUT}\"\n")
         f.write(f"`define SNN_ACTIVITY_LAMBDA {ACTIVITY_LAMBDA}\n")
         f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
@@ -582,6 +589,7 @@ def main():
     print(f"  network: {N_INPUT} -> {N_HIDDEN} -> {N_OUTPUT}")
     print(f"  timesteps/sample: {T_STEPS}")
     print(f"  bias mode: {BIAS_MODE}")
+    print(f"  readout: {READOUT}")
     if ACTIVITY_LAMBDA > 0.0:
         print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     train_indices = select_indices(train_ds, NUM_TRAIN, "train")
@@ -654,6 +662,7 @@ def main():
         "finetune_epochs": FINETUNE_EPOCHS,
         "topk_w1": TOPK_W1,
         "bias_mode": BIAS_MODE,
+        "readout": READOUT,
         "activity_lambda": ACTIVITY_LAMBDA,
         "threshold_objective": THRESHOLD_OBJECTIVE,
         "threshold": int(best_thr),
@@ -692,6 +701,7 @@ def main():
     print(f"  sparse W1 top-k per hidden neuron: {TOPK_W1}")
     print(f"  sparse finetune epochs: {FINETUNE_EPOCHS}")
     print(f"  bias mode: {BIAS_MODE}  hidden/output bias synapses: {np.count_nonzero(b1_spike)} / {np.count_nonzero(b2_spike)}")
+    print(f"  readout: {READOUT}")
     if ACTIVITY_LAMBDA > 0.0:
         print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")

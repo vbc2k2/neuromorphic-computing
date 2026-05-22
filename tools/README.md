@@ -125,6 +125,8 @@ Useful N-MNIST exporter knobs:
 
 - `NMNIST_BIAS_MODE=none|hidden|all`: use the already-injected bias neuron for
   hidden and optionally output bias currents.
+- `NMNIST_READOUT=membrane|spike`: tune the SNN against final output membrane
+  scores or output spike counts. `event_ram2` uses membrane readout.
 - `NMNIST_ACTIVITY_LAMBDA=<float>`: adds a hidden-activation penalty during
   sparse finetune to trade accuracy for fewer hidden spikes/deliveries.
 - `NMNIST_THR_MIN`, `NMNIST_THR_MAX`, `NMNIST_THR_STEP`: threshold search range.

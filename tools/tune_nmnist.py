@@ -36,6 +36,7 @@ PRESETS: dict[str, dict[str, list[str]]] = {
         "NMNIST_TOPK_W1": ["96", "128"],
         "NMNIST_FINETUNE_EPOCHS": ["12"],
         "NMNIST_BIAS_MODE": ["none", "hidden"],
+        "NMNIST_READOUT": ["membrane"],
         "NMNIST_ACTIVITY_LAMBDA": ["0"],
     },
     "edge": {
@@ -43,6 +44,7 @@ PRESETS: dict[str, dict[str, list[str]]] = {
         "NMNIST_TOPK_W1": ["64", "96", "128"],
         "NMNIST_FINETUNE_EPOCHS": ["12"],
         "NMNIST_BIAS_MODE": ["none", "hidden"],
+        "NMNIST_READOUT": ["membrane"],
         "NMNIST_ACTIVITY_LAMBDA": ["0", "0.0001"],
     },
     "accuracy": {
@@ -50,6 +52,7 @@ PRESETS: dict[str, dict[str, list[str]]] = {
         "NMNIST_TOPK_W1": ["128", "160", "192"],
         "NMNIST_FINETUNE_EPOCHS": ["12", "20"],
         "NMNIST_BIAS_MODE": ["hidden", "all"],
+        "NMNIST_READOUT": ["membrane"],
         "NMNIST_ACTIVITY_LAMBDA": ["0"],
     },
 }
@@ -62,6 +65,7 @@ SUMMARY_FIELDS = [
     "topk_w1",
     "finetune_epochs",
     "bias_mode",
+    "readout",
     "activity_lambda",
     "ann_int_acc_pct",
     "snn_eval_acc_pct",
@@ -96,8 +100,9 @@ def config_name(cfg: dict[str, str]) -> str:
     k = cfg.get("NMNIST_TOPK_W1", "?")
     e = cfg.get("NMNIST_FINETUNE_EPOCHS", "?")
     bias = cfg.get("NMNIST_BIAS_MODE", "none")
+    readout = cfg.get("NMNIST_READOUT", "membrane")
     lam = cfg.get("NMNIST_ACTIVITY_LAMBDA", "0").replace(".", "p")
-    return f"t{t}_k{k}_e{e}_b{bias}_a{lam}"
+    return f"t{t}_k{k}_e{e}_b{bias}_r{readout}_a{lam}"
 
 
 def iter_configs(grid: dict[str, list[str]]):
@@ -126,6 +131,7 @@ def flatten_metrics(tag: str, status: str, metrics: dict, log_path: Path) -> dic
         "topk_w1": metrics.get("topk_w1", ""),
         "finetune_epochs": metrics.get("finetune_epochs", ""),
         "bias_mode": metrics.get("bias_mode", ""),
+        "readout": metrics.get("readout", ""),
         "activity_lambda": metrics.get("activity_lambda", ""),
         "ann_int_acc_pct": ann_acc,
         "snn_eval_acc_pct": snn_acc,
