@@ -53,6 +53,8 @@ TOPK_W1 = int(os.environ.get("NMNIST_TOPK_W1", "128"))
 FINETUNE_EPOCHS = int(os.environ.get("NMNIST_FINETUNE_EPOCHS", "12"))
 BIAS_MODE = os.environ.get("NMNIST_BIAS_MODE", "none").lower()
 READOUT = os.environ.get("NMNIST_READOUT", "membrane").lower()
+PRUNE_MODE = os.environ.get("NMNIST_PRUNE_MODE", "per_hidden").lower()
+MIN_W1_PER_HIDDEN = int(os.environ.get("NMNIST_MIN_W1_PER_HIDDEN", "0"))
 ACTIVITY_LAMBDA = float(os.environ.get("NMNIST_ACTIVITY_LAMBDA", "0.0"))
 
 THR_MIN = int(os.environ.get("NMNIST_THR_MIN", "20"))
@@ -72,6 +74,10 @@ if BIAS_MODE not in {"none", "hidden", "all"}:
     raise SystemExit("NMNIST_BIAS_MODE must be one of: none, hidden, all")
 if READOUT not in {"spike", "membrane"}:
     raise SystemExit("NMNIST_READOUT must be one of: spike, membrane")
+if PRUNE_MODE not in {"per_hidden", "global", "saliency"}:
+    raise SystemExit("NMNIST_PRUNE_MODE must be one of: per_hidden, global, saliency")
+if MIN_W1_PER_HIDDEN < 0:
+    raise SystemExit("NMNIST_MIN_W1_PER_HIDDEN must be non-negative")
 if THRESHOLD_OBJECTIVE not in {"accuracy", "ops", "edge"}:
     raise SystemExit("NMNIST_THRESHOLD_OBJECTIVE must be one of: accuracy, ops, edge")
 if THR_STEP <= 0:
@@ -279,12 +285,39 @@ def prune_w1(w1: np.ndarray) -> np.ndarray:
     return sparse
 
 
-def topk_mask(w1: np.ndarray) -> np.ndarray:
+def topk_mask(w1: np.ndarray, train_counts: np.ndarray | None = None,
+              w2: np.ndarray | None = None) -> np.ndarray:
     mask = np.zeros_like(w1, dtype=np.float32)
     k = min(TOPK_W1, w1.shape[1])
-    for h in range(w1.shape[0]):
-        idx = np.argsort(np.abs(w1[h]))[-k:]
-        mask[h, idx] = 1.0
+    if PRUNE_MODE == "per_hidden":
+        for h in range(w1.shape[0]):
+            idx = np.argsort(np.abs(w1[h]))[-k:]
+            mask[h, idx] = 1.0
+        return mask
+
+    budget = min(k * w1.shape[0], w1.size)
+    scores = np.abs(w1).astype(np.float64)
+    if PRUNE_MODE == "saliency":
+        if train_counts is not None:
+            activity = np.sqrt(np.mean(train_counts, axis=0).astype(np.float64) + 1e-6)
+            scores *= activity[np.newaxis, :]
+        if w2 is not None:
+            hidden_importance = np.linalg.norm(w2, axis=0).astype(np.float64) + 1e-6
+            scores *= hidden_importance[:, np.newaxis]
+
+    min_per_hidden = min(MIN_W1_PER_HIDDEN, k)
+    if min_per_hidden > 0:
+        for h in range(w1.shape[0]):
+            idx = np.argsort(scores[h])[-min_per_hidden:]
+            mask[h, idx] = 1.0
+
+    selected = int(mask.sum())
+    remaining = max(0, budget - selected)
+    if remaining > 0:
+        flat_scores = scores.copy()
+        flat_scores[mask.astype(bool)] = -np.inf
+        flat_idx = np.argpartition(flat_scores.ravel(), -remaining)[-remaining:]
+        mask.ravel()[flat_idx] = 1.0
     return mask
 
 
@@ -571,6 +604,8 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_FINETUNE_EPOCHS {FINETUNE_EPOCHS}\n")
         f.write(f"`define SNN_BIAS_MODE      \"{BIAS_MODE}\"\n")
         f.write(f"`define SNN_READOUT        \"{READOUT}\"\n")
+        f.write(f"`define SNN_PRUNE_MODE     \"{PRUNE_MODE}\"\n")
+        f.write(f"`define SNN_MIN_W1_PER_HIDDEN {MIN_W1_PER_HIDDEN}\n")
         f.write(f"`define SNN_ACTIVITY_LAMBDA {ACTIVITY_LAMBDA}\n")
         f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
@@ -590,6 +625,7 @@ def main():
     print(f"  timesteps/sample: {T_STEPS}")
     print(f"  bias mode: {BIAS_MODE}")
     print(f"  readout: {READOUT}")
+    print(f"  prune mode: {PRUNE_MODE}")
     if ACTIVITY_LAMBDA > 0.0:
         print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     train_indices = select_indices(train_ds, NUM_TRAIN, "train")
@@ -606,7 +642,8 @@ def main():
     model, train_acc, test_acc = train_mlp(
         train_counts, train_labels, test_counts, test_labels)
     w1_dense = model[0].weight.detach().cpu().numpy()
-    mask_np = topk_mask(w1_dense)
+    w2_dense = model[2].weight.detach().cpu().numpy()
+    mask_np = topk_mask(w1_dense, train_counts, w2_dense)
     with torch.no_grad():
         model[0].weight.mul_(torch.tensor(mask_np, dtype=torch.float32))
     model, sparse_train_acc, sparse_test_acc = finetune_sparse(
@@ -663,6 +700,8 @@ def main():
         "topk_w1": TOPK_W1,
         "bias_mode": BIAS_MODE,
         "readout": READOUT,
+        "prune_mode": PRUNE_MODE,
+        "min_w1_per_hidden": MIN_W1_PER_HIDDEN,
         "activity_lambda": ACTIVITY_LAMBDA,
         "threshold_objective": THRESHOLD_OBJECTIVE,
         "threshold": int(best_thr),
@@ -699,6 +738,7 @@ def main():
     print(f"  float count MLP train/test accuracy: {train_acc * 100:.2f}% / {test_acc * 100:.2f}%")
     print(f"  sparse float MLP train/test accuracy: {sparse_train_acc * 100:.2f}% / {sparse_test_acc * 100:.2f}%")
     print(f"  sparse W1 top-k per hidden neuron: {TOPK_W1}")
+    print(f"  prune mode: {PRUNE_MODE}  min W1/hidden: {MIN_W1_PER_HIDDEN}")
     print(f"  sparse finetune epochs: {FINETUNE_EPOCHS}")
     print(f"  bias mode: {BIAS_MODE}  hidden/output bias synapses: {np.count_nonzero(b1_spike)} / {np.count_nonzero(b2_spike)}")
     print(f"  readout: {READOUT}")

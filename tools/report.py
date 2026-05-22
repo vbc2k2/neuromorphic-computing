@@ -213,6 +213,8 @@ def main() -> None:
             "SNN_FINETUNE_EPOCHS",
             "SNN_BIAS_MODE",
             "SNN_READOUT",
+            "SNN_PRUNE_MODE",
+            "SNN_MIN_W1_PER_HIDDEN",
             "SNN_ACTIVITY_LAMBDA",
             "SNN_NUM_SYN",
         ]:

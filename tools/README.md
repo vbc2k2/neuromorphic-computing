@@ -118,6 +118,7 @@ python3 tools/tune_nmnist.py \
   --grid NMNIST_T_STEPS=40,50 \
   --grid NMNIST_TOPK_W1=96,128,160 \
   --grid NMNIST_BIAS_MODE=none,hidden \
+  --grid NMNIST_PRUNE_MODE=per_hidden,saliency \
   --grid NMNIST_ACTIVITY_LAMBDA=0,0.0001
 ```
 
@@ -127,6 +128,11 @@ Useful N-MNIST exporter knobs:
   hidden and optionally output bias currents.
 - `NMNIST_READOUT=membrane|spike`: tune the SNN against final output membrane
   scores or output spike counts. `event_ram2` uses membrane readout.
+- `NMNIST_PRUNE_MODE=per_hidden|global|saliency`: allocate the W1 sparse
+  budget uniformly per hidden neuron, globally by magnitude, or globally by
+  input-activity/output-importance saliency.
+- `NMNIST_MIN_W1_PER_HIDDEN=<int>`: optional floor used by global/saliency
+  pruning to keep hidden neurons from going completely input-dead.
 - `NMNIST_ACTIVITY_LAMBDA=<float>`: adds a hidden-activation penalty during
   sparse finetune to trade accuracy for fewer hidden spikes/deliveries.
 - `NMNIST_THR_MIN`, `NMNIST_THR_MAX`, `NMNIST_THR_STEP`: threshold search range.
