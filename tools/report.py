@@ -216,6 +216,8 @@ def main() -> None:
             "SNN_PRUNE_MODE",
             "SNN_MIN_W1_PER_HIDDEN",
             "SNN_ACTIVITY_LAMBDA",
+            "SNN_MEMBRANE_WIDTH",
+            "SNN_HW_WRAP",
             "SNN_NUM_SYN",
         ]:
             if key in cfg:

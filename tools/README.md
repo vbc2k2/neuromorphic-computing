@@ -138,6 +138,9 @@ Useful N-MNIST exporter knobs:
 - `NMNIST_THR_MIN`, `NMNIST_THR_MAX`, `NMNIST_THR_STEP`: threshold search range.
 - `NMNIST_THRESHOLD_OBJECTIVE=accuracy|ops|edge`: threshold selection objective.
   `edge` uses `NMNIST_THRESHOLD_OP_PENALTY` to mildly penalize delivery count.
+- `NMNIST_MEMBRANE_WIDTH=16` and `NMNIST_HW_WRAP=1`: make the export-time
+  SNN proxy use the same signed membrane/accumulator width and wraparound as
+  the RTL. Keep this enabled for apples-to-apples RTL validation.
 
 Current benchmark targets:
 

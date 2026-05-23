@@ -56,6 +56,8 @@ READOUT = os.environ.get("NMNIST_READOUT", "membrane").lower()
 PRUNE_MODE = os.environ.get("NMNIST_PRUNE_MODE", "per_hidden").lower()
 MIN_W1_PER_HIDDEN = int(os.environ.get("NMNIST_MIN_W1_PER_HIDDEN", "0"))
 ACTIVITY_LAMBDA = float(os.environ.get("NMNIST_ACTIVITY_LAMBDA", "0.0"))
+MEMBRANE_WIDTH = int(os.environ.get("NMNIST_MEMBRANE_WIDTH", "16"))
+HW_WRAP = os.environ.get("NMNIST_HW_WRAP", "1").lower() not in {"0", "false", "no", "off"}
 
 THR_MIN = int(os.environ.get("NMNIST_THR_MIN", "20"))
 THR_MAX = int(os.environ.get("NMNIST_THR_MAX", "1480"))
@@ -82,6 +84,21 @@ if THRESHOLD_OBJECTIVE not in {"accuracy", "ops", "edge"}:
     raise SystemExit("NMNIST_THRESHOLD_OBJECTIVE must be one of: accuracy, ops, edge")
 if THR_STEP <= 0:
     raise SystemExit("NMNIST_THR_STEP must be positive")
+if MEMBRANE_WIDTH <= 1:
+    raise SystemExit("NMNIST_MEMBRANE_WIDTH must be greater than 1")
+
+
+def wrap_signed(values, width: int = MEMBRANE_WIDTH) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.int64)
+    mask = (1 << width) - 1
+    sign = 1 << (width - 1)
+    return (((arr & mask) ^ sign) - sign).astype(np.int32)
+
+
+def hw_mem(values) -> np.ndarray:
+    if not HW_WRAP:
+        return np.asarray(values, dtype=np.int32)
+    return wrap_signed(values, MEMBRANE_WIDTH)
 
 
 def load_tonic_nmnist():
@@ -434,16 +451,17 @@ def choose_ann_hidden_shift(counts: np.ndarray, labels: np.ndarray,
 
 
 def lif_leak(mem: np.ndarray) -> np.ndarray:
-    return np.where(mem > LEAK, mem - LEAK, np.where(mem > 0, 0, mem))
+    leaked = np.where(mem > LEAK, mem - LEAK, np.where(mem > 0, 0, mem))
+    return hw_mem(leaked)
 
 
 def precompute_hidden_input(spikes: np.ndarray, w1q: np.ndarray,
                             b1_spike: np.ndarray) -> np.ndarray:
     w1i = w1q.astype(np.int32)
     hin = np.zeros((spikes.shape[0], T_STEPS, N_HIDDEN), dtype=np.int32)
+    b1i = b1_spike.astype(np.int32)
     for t in range(T_STEPS):
-        hin[:, t, :] = spikes[:, t, :].astype(np.int32) @ w1i.T
-        hin[:, t, :] += b1_spike.astype(np.int32)
+        hin[:, t, :] = hw_mem(spikes[:, t, :].astype(np.int32) @ w1i.T + b1i)
     return hin
 
 
@@ -461,17 +479,18 @@ def simulate_snn_hin(hin: np.ndarray, labels: np.ndarray,
     hidden_spikes = 0
     hidden_deliveries = 0
     output_spikes = 0
+    threshold_i = int(hw_mem(threshold))
 
     for t in range(T_STEPS):
-        mem_h = lif_leak(mem_h) + hin[:, t, :]
-        hidden = mem_h >= threshold
+        mem_h = hw_mem(lif_leak(mem_h).astype(np.int64) + hin[:, t, :].astype(np.int64))
+        hidden = mem_h >= threshold_i
         mem_h[hidden] = 0
 
         hidden_deliveries += int((hidden_prev * hidden_fanout).sum())
-        oin = hidden_prev @ w2i.T + b2i
-        mem_o = lif_leak(mem_o) + oin
+        oin = hw_mem(hidden_prev @ w2i.T + b2i)
+        mem_o = hw_mem(lif_leak(mem_o).astype(np.int64) + oin.astype(np.int64))
         if READOUT == "spike":
-            out = mem_o >= threshold
+            out = mem_o >= threshold_i
             mem_o[out] = 0
             out_count += out.astype(np.int32)
             output_spikes += int(out.sum())
@@ -607,6 +626,8 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
         f.write(f"`define SNN_PRUNE_MODE     \"{PRUNE_MODE}\"\n")
         f.write(f"`define SNN_MIN_W1_PER_HIDDEN {MIN_W1_PER_HIDDEN}\n")
         f.write(f"`define SNN_ACTIVITY_LAMBDA {ACTIVITY_LAMBDA}\n")
+        f.write(f"`define SNN_MEMBRANE_WIDTH {MEMBRANE_WIDTH}\n")
+        f.write(f"`define SNN_HW_WRAP        {1 if HW_WRAP else 0}\n")
         f.write(f"`define SNN_ANN_HIDDEN_SHIFT {hidden_shift}\n")
         f.write(f"`define SNN_ANN_NUM_MACS   {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}\n")
         f.write("`endif\n")
@@ -626,6 +647,7 @@ def main():
     print(f"  bias mode: {BIAS_MODE}")
     print(f"  readout: {READOUT}")
     print(f"  prune mode: {PRUNE_MODE}")
+    print(f"  membrane width: {MEMBRANE_WIDTH}  hardware wrap model: {int(HW_WRAP)}")
     if ACTIVITY_LAMBDA > 0.0:
         print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     train_indices = select_indices(train_ds, NUM_TRAIN, "train")
@@ -703,6 +725,8 @@ def main():
         "prune_mode": PRUNE_MODE,
         "min_w1_per_hidden": MIN_W1_PER_HIDDEN,
         "activity_lambda": ACTIVITY_LAMBDA,
+        "membrane_width": MEMBRANE_WIDTH,
+        "hw_wrap": int(HW_WRAP),
         "threshold_objective": THRESHOLD_OBJECTIVE,
         "threshold": int(best_thr),
         "threshold_tune_acc_pct": best_acc * 100.0,
@@ -741,7 +765,7 @@ def main():
     print(f"  prune mode: {PRUNE_MODE}  min W1/hidden: {MIN_W1_PER_HIDDEN}")
     print(f"  sparse finetune epochs: {FINETUNE_EPOCHS}")
     print(f"  bias mode: {BIAS_MODE}  hidden/output bias synapses: {np.count_nonzero(b1_spike)} / {np.count_nonzero(b2_spike)}")
-    print(f"  readout: {READOUT}")
+    print(f"  readout: {READOUT}  membrane width: {MEMBRANE_WIDTH}  hw-wrap: {int(HW_WRAP)}")
     if ACTIVITY_LAMBDA > 0.0:
         print(f"  sparse activity penalty: {ACTIVITY_LAMBDA:g}")
     print(f"  sparse INT8 ANN exported-test accuracy: {ann_acc * 100:.2f}%")
