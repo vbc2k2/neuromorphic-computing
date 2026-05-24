@@ -89,6 +89,17 @@ run:
 python3 tools/compare_predictions.py --tag _nmnist_t50_k128_saliency_mem
 ```
 
+Replay the exported event benchmark directly from `sim/*.mem` using RTL-style
+FIFO/CSR/scan ordering. This is useful when the compact exporter golden and RTL
+predictions diverge:
+
+```bash
+python3 tools/replay_event_python.py --tag _nmnist_t50_k128_saliency_mem --trace-image 0
+python3 tools/compare_predictions.py \
+  --tag _nmnist_t50_k128_saliency_mem \
+  --golden sim/classify_event_python_replay_nmnist_t50_k128_saliency_mem.csv
+```
+
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
 exists, runs from `sim/` so `$readmemh` files resolve correctly, and applies the
 same parameters used by the Verilator benchmark.
