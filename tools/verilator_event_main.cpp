@@ -283,7 +283,7 @@ struct ClassificationResult {
 };
 
 ClassificationResult classify(EventTop& top, const std::vector<std::string>& spike_words, int image_index,
-                              int max_cycles_per_image) {
+                              int max_cycles_per_image, std::ofstream* trace_csv = nullptr) {
     reset(top);
     std::vector<int> out_count(N_OUTPUT, 0);
     int cycles = 0;
@@ -297,6 +297,24 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
         }
         inject_spike(top, ID_BIAS, out_count, cycles);
         run_step(top, out_count, cycles, max_cycles_per_image, image_index);
+#ifdef EVENT_SCORE_READOUT
+        if (trace_csv != nullptr) {
+            const auto step_scores = read_output_scores(top, cycles);
+            *trace_csv << t;
+            for (int value : step_scores) {
+                *trace_csv << "," << value;
+            }
+            *trace_csv << "\n";
+        }
+#else
+        if (trace_csv != nullptr) {
+            *trace_csv << t;
+            for (int value : out_count) {
+                *trace_csv << "," << value;
+            }
+            *trace_csv << "\n";
+        }
+#endif
     }
 
     tick(top);
@@ -317,6 +335,7 @@ int main(int argc, char** argv) {
     int last = parse_plusarg_int(argc, argv, "last", 4);
     const std::string tag = parse_plusarg_string(argc, argv, "tag", "_vl");
     const int max_cycles = parse_plusarg_int(argc, argv, "max_cycles", 50000000);
+    const int trace_image = parse_plusarg_int(argc, argv, "trace_image", -1);
 
     const auto spike_words = read_spike_words("snn_spikes.mem");
     const auto labels = read_labels("snn_labels.mem");
@@ -356,7 +375,19 @@ int main(int argc, char** argv) {
     const int progress_interval = std::max(1, nrun / 20);
 
     for (int img = first; img <= last; ++img) {
-        const auto result = classify(top, spike_words, img, max_cycles);
+        std::ofstream trace_csv;
+        std::ofstream* trace_ptr = nullptr;
+        if (img == trace_image) {
+            trace_csv.open("trace_event" + tag + "_img" + std::to_string(img) + ".csv");
+            trace_csv << "timestep";
+            for (int o = 0; o < N_OUTPUT; ++o) {
+                trace_csv << ",score" << o;
+            }
+            trace_csv << "\n";
+            trace_ptr = &trace_csv;
+        }
+
+        const auto result = classify(top, spike_words, img, max_cycles, trace_ptr);
         const int pred = result.prediction;
         const int ok = (pred == labels[img]) ? 1 : 0;
         correct += ok;

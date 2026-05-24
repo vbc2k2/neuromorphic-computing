@@ -11,6 +11,7 @@ FIRST="${1:-0}"
 LAST="${2:-4}"
 TAG="${3:-_ram2}"
 MAX_CYCLES="${4:-100000000}"
+TRACE_IMAGE="${TRACE_IMAGE:--1}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -82,8 +83,11 @@ make -C "$OBJDIR" -f Vtop_event_ram2.mk -j "${VERILATOR_JOBS:-1}"
 echo "[verilator-event-ram2$TAG] images $FIRST..$LAST  ($(date))"
 cd "$RUNDIR"
 "$OBJDIR/Vtop_event_ram2" \
-    +first="$FIRST" +last="$LAST" +tag="$TAG" +max_cycles="$MAX_CYCLES"
+    +first="$FIRST" +last="$LAST" +tag="$TAG" +max_cycles="$MAX_CYCLES" +trace_image="$TRACE_IMAGE"
 
 cp -f "classify_event${TAG}.csv" "$SIM/"
 cp -f "metrics_classify_event${TAG}.csv" "$SIM/"
+if [ "$TRACE_IMAGE" -ge 0 ] && [ -f "trace_event${TAG}_img${TRACE_IMAGE}.csv" ]; then
+    cp -f "trace_event${TAG}_img${TRACE_IMAGE}.csv" "$SIM/"
+fi
 echo "[verilator-event-ram2$TAG] done  ($(date))"

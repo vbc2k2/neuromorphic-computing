@@ -98,6 +98,14 @@ python3 tools/replay_event_python.py --tag _nmnist_t50_k128_saliency_mem --trace
 python3 tools/compare_predictions.py \
   --tag _nmnist_t50_k128_saliency_mem \
   --golden sim/classify_event_python_replay_nmnist_t50_k128_saliency_mem.csv
+
+TRACE_IMAGE=0 python3 tools/bench.py run nmnist \
+  --design event_ram2 \
+  --tag _nmnist_t50_k128_saliency_mem_trace \
+  --first 0 --last 0 --max-cycles 400000000
+python3 tools/compare_trace.py \
+  sim/trace_event_python_replay_nmnist_t50_k128_saliency_mem_img0.csv \
+  sim/trace_event_nmnist_t50_k128_saliency_mem_trace_img0.csv
 ```
 
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
