@@ -19,6 +19,18 @@ def read_trace(path: Path) -> list[list[int]]:
     return rows
 
 
+def read_stats(path: Path) -> list[dict[str, int]]:
+    stats: list[dict[str, int]] = []
+    with path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            stats.append({
+                key: int(row[key])
+                for key in ("deliveries", "router_events", "spikes")
+                if key in row and row[key] != ""
+            })
+    return stats
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare score traces")
     parser.add_argument("golden", type=Path)
@@ -28,6 +40,8 @@ def main() -> None:
 
     golden = read_trace(args.golden)
     rtl = read_trace(args.rtl)
+    golden_stats = read_stats(args.golden)
+    rtl_stats = read_stats(args.rtl)
     n = min(len(golden), len(rtl))
     if n == 0:
         raise SystemExit("no trace rows to compare")
@@ -52,6 +66,22 @@ def main() -> None:
     print(f"timesteps compared: {n}")
     print(f"mismatch timesteps: {mismatch_count}")
     print(f"max abs diff:       {max_abs_diff}")
+    if golden_stats and rtl_stats:
+        stat_n = min(len(golden_stats), len(rtl_stats), n)
+        print()
+        print("first stat mismatches:")
+        shown = 0
+        for t in range(stat_n):
+            keys = sorted(set(golden_stats[t]) & set(rtl_stats[t]))
+            diffs = {key: rtl_stats[t][key] - golden_stats[t][key]
+                     for key in keys if rtl_stats[t][key] != golden_stats[t][key]}
+            if diffs:
+                print(f"t={t} {diffs} golden={golden_stats[t]} rtl={rtl_stats[t]}")
+                shown += 1
+                if shown >= args.show:
+                    break
+        if shown == 0:
+            print("none")
     if first_mismatches:
         print()
         print("first mismatches:")

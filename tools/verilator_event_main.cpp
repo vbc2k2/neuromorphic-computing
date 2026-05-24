@@ -296,11 +296,19 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
             }
         }
         inject_spike(top, ID_BIAS, out_count, cycles);
+        const uint32_t active_before = top.active_cycles;
+        const uint32_t deliveries_before = top.router_deliveries;
+        const uint32_t events_before = top.router_events;
+        const uint32_t spikes_before = top.total_spikes_fired;
         run_step(top, out_count, cycles, max_cycles_per_image, image_index);
 #ifdef EVENT_SCORE_READOUT
         if (trace_csv != nullptr) {
             const auto step_scores = read_output_scores(top, cycles);
-            *trace_csv << t;
+            *trace_csv << t
+                       << "," << (top.active_cycles - active_before)
+                       << "," << (top.router_deliveries - deliveries_before)
+                       << "," << (top.router_events - events_before)
+                       << "," << (top.total_spikes_fired - spikes_before);
             for (int value : step_scores) {
                 *trace_csv << "," << value;
             }
@@ -308,7 +316,11 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
         }
 #else
         if (trace_csv != nullptr) {
-            *trace_csv << t;
+            *trace_csv << t
+                       << "," << (top.active_cycles - active_before)
+                       << "," << (top.router_deliveries - deliveries_before)
+                       << "," << (top.router_events - events_before)
+                       << "," << (top.total_spikes_fired - spikes_before);
             for (int value : out_count) {
                 *trace_csv << "," << value;
             }
@@ -379,7 +391,7 @@ int main(int argc, char** argv) {
         std::ofstream* trace_ptr = nullptr;
         if (img == trace_image) {
             trace_csv.open("trace_event" + tag + "_img" + std::to_string(img) + ".csv");
-            trace_csv << "timestep";
+            trace_csv << "timestep,active_cycles,deliveries,router_events,spikes";
             for (int o = 0; o < N_OUTPUT; ++o) {
                 trace_csv << ",score" << o;
             }

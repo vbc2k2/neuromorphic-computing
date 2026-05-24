@@ -134,6 +134,9 @@ class EventReplay:
         trace_rows: list[list[int]] = []
 
         for t in range(self.t_steps):
+            deliveries_before = stats["deliveries"]
+            events_before = stats["router_events"]
+            spikes_before = stats["spikes"]
             word = self.spike_words[image * self.t_steps + t]
             for src in spike_ids(word, self.n_input):
                 fifo.append(src)
@@ -161,6 +164,9 @@ class EventReplay:
             if trace:
                 trace_rows.append([
                     t,
+                    stats["deliveries"] - deliveries_before,
+                    stats["router_events"] - events_before,
+                    stats["spikes"] - spikes_before,
                     *membrane[self.id_output_base:self.id_output_base + self.n_output],
                 ])
 
@@ -171,7 +177,10 @@ class EventReplay:
 def write_trace(path: Path, trace_rows: list[list[int]], n_output: int) -> None:
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestep", *[f"score{i}" for i in range(n_output)]])
+        writer.writerow([
+            "timestep", "deliveries", "router_events", "spikes",
+            *[f"score{i}" for i in range(n_output)],
+        ])
         writer.writerows(trace_rows)
 
 
