@@ -19,6 +19,7 @@ LOGDIR="$RESULTS/nmnist_saliency_validate/logs"
 MAX_CYCLES="${MAX_CYCLES:-400000000}"
 FORCE="${FORCE:-0}"
 RUN_SYNTH="${RUN_SYNTH:-1}"
+FORCE_SYNTH="${FORCE_SYNTH:-0}"
 
 mkdir -p "$LOGDIR"
 cd "$ROOT"
@@ -38,7 +39,7 @@ metric_exists() {
 
 log_exists() {
     local path="$1"
-    [ "$FORCE" != "1" ] && [ -s "$path" ]
+    [ "$FORCE" != "1" ] && [ "$FORCE_SYNTH" != "1" ] && [ -s "$path" ]
 }
 
 run_logged() {
@@ -57,7 +58,7 @@ archive_tag() {
     cp -f "$SIM/metrics_classify_event${tag}.csv" "$out/" 2>/dev/null || true
     cp -f "$SIM/metrics_classify_ann${tag}.csv" "$out/" 2>/dev/null || true
     cp -f "$SIM/classify_event${tag}.csv" "$out/" 2>/dev/null || true
-    cp -f "$SIM/snn_golden_predictions.csv" "$out/snn_golden_predictions${tag}.csv" 2>/dev/null || true
+    cp -f "$SIM/snn_golden_predictions${tag}.csv" "$out/" 2>/dev/null || true
     cp -f "$SIM/snn_config${tag}.vh" "$out/" 2>/dev/null || true
     cp -f "$RESULTS"/yosys_*"${tag}"_*.log "$out/" 2>/dev/null || true
     cp -f "$LOGDIR"/*"${tag}"*.log "$out/" 2>/dev/null || true
@@ -88,7 +89,7 @@ validate_candidate() {
         needs_rtl_inputs=1
     fi
 
-    if [ "$FORCE" = "1" ] || [ "$needs_rtl_inputs" = "1" ] || [ ! -s "$SIM/snn_config${tag}.vh" ]; then
+    if [ "$FORCE" = "1" ] || [ "$needs_rtl_inputs" = "1" ] || [ ! -s "$SIM/snn_config${tag}.vh" ] || [ ! -s "$SIM/snn_golden_predictions${tag}.csv" ]; then
         run_logged "export${tag}" \
             python3 tools/bench.py export nmnist \
                 --set "NMNIST_T_STEPS=$t_steps" \
@@ -97,6 +98,7 @@ validate_candidate() {
                 --set "NMNIST_BIAS_MODE=$bias" \
                 --set "NMNIST_READOUT=membrane" \
                 --set "NMNIST_PRUNE_MODE=$prune"
+        cp -f "$SIM/snn_golden_predictions.csv" "$SIM/snn_golden_predictions${tag}.csv"
     else
         echo "[skip] export not needed for completed RTL metrics: $SIM/snn_config${tag}.vh"
     fi
@@ -116,9 +118,10 @@ validate_candidate() {
         echo "[skip] ANN metrics exist: $SIM/metrics_classify_ann${tag}.csv"
     fi
 
-    if [ -s "$SIM/snn_golden_predictions.csv" ] && [ -s "$SIM/classify_event${tag}.csv" ]; then
+    if [ -s "$SIM/snn_golden_predictions${tag}.csv" ] && [ -s "$SIM/classify_event${tag}.csv" ]; then
         run_logged "compare${tag}" \
-            python3 tools/compare_predictions.py --tag "$tag"
+            python3 tools/compare_predictions.py --tag "$tag" \
+                --golden "$SIM/snn_golden_predictions${tag}.csv"
     else
         echo "[skip] prediction compare missing golden or RTL classify CSV"
     fi
@@ -155,7 +158,7 @@ fi
 
 echo "repo: $ROOT"
 echo "logs: $LOGDIR"
-echo "FORCE=$FORCE RUN_SYNTH=$RUN_SYNTH MAX_CYCLES=$MAX_CYCLES"
+echo "FORCE=$FORCE FORCE_SYNTH=$FORCE_SYNTH RUN_SYNTH=$RUN_SYNTH MAX_CYCLES=$MAX_CYCLES"
 
 validate_candidate "_nmnist_t50_k128_saliency_mem" 50 128 none saliency
 validate_candidate "_nmnist_t50_k96_saliency_mem" 50 96 none saliency
