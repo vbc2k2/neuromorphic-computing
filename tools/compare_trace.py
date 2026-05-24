@@ -31,6 +31,14 @@ def read_stats(path: Path) -> list[dict[str, int]]:
     return stats
 
 
+def read_spike_ids(path: Path) -> list[str]:
+    values: list[str] = []
+    with path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            values.append(row.get("spike_ids", ""))
+    return values
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare score traces")
     parser.add_argument("golden", type=Path)
@@ -42,6 +50,8 @@ def main() -> None:
     rtl = read_trace(args.rtl)
     golden_stats = read_stats(args.golden)
     rtl_stats = read_stats(args.rtl)
+    golden_spike_ids = read_spike_ids(args.golden)
+    rtl_spike_ids = read_spike_ids(args.rtl)
     n = min(len(golden), len(rtl))
     if n == 0:
         raise SystemExit("no trace rows to compare")
@@ -77,6 +87,21 @@ def main() -> None:
                      for key in keys if rtl_stats[t][key] != golden_stats[t][key]}
             if diffs:
                 print(f"t={t} {diffs} golden={golden_stats[t]} rtl={rtl_stats[t]}")
+                shown += 1
+                if shown >= args.show:
+                    break
+        if shown == 0:
+            print("none")
+    if golden_spike_ids and rtl_spike_ids:
+        spike_n = min(len(golden_spike_ids), len(rtl_spike_ids), n)
+        print()
+        print("first spike-id mismatches:")
+        shown = 0
+        for t in range(spike_n):
+            if golden_spike_ids[t] != rtl_spike_ids[t]:
+                print(f"t={t}")
+                print(f"  golden {golden_spike_ids[t]}")
+                print(f"  rtl    {rtl_spike_ids[t]}")
                 shown += 1
                 if shown >= args.show:
                     break

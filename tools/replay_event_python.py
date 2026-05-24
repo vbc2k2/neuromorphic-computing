@@ -148,6 +148,7 @@ class EventReplay:
                 stats["deliveries"] += self.deliver_source(src, weight_sum)
 
             next_fifo: Deque[int] = deque()
+            fired_ids: list[int] = []
             for neuron_id in range(self.n_total):
                 leaked = leak_value(membrane[neuron_id], self.leak, self.mem_width)
                 integrated = wrap_signed(leaked + weight_sum[neuron_id], self.mem_width)
@@ -155,6 +156,7 @@ class EventReplay:
                 if fired and not self.is_output(neuron_id):
                     membrane[neuron_id] = 0
                     next_fifo.append(neuron_id)
+                    fired_ids.append(neuron_id)
                     stats["spikes"] += 1
                 else:
                     membrane[neuron_id] = integrated
@@ -167,6 +169,7 @@ class EventReplay:
                     stats["deliveries"] - deliveries_before,
                     stats["router_events"] - events_before,
                     stats["spikes"] - spikes_before,
+                    ";".join(str(value) for value in fired_ids),
                     *membrane[self.id_output_base:self.id_output_base + self.n_output],
                 ])
 
@@ -178,7 +181,7 @@ def write_trace(path: Path, trace_rows: list[list[int]], n_output: int) -> None:
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "timestep", "deliveries", "router_events", "spikes",
+            "timestep", "deliveries", "router_events", "spikes", "spike_ids",
             *[f"score{i}" for i in range(n_output)],
         ])
         writer.writerows(trace_rows)

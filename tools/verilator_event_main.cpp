@@ -165,13 +165,40 @@ void count_output_spikes(const EventTop& top, std::vector<int>& out_count) {
     }
 }
 
-void tick(EventTop& top, std::vector<int>* out_count = nullptr) {
+void collect_hidden_spikes(const EventTop& top, std::vector<int>& fired_ids) {
+    for (int word = 0; word < (N_TOTAL + 31) / 32; ++word) {
+        uint32_t bits = top.neuron_spikes[word];
+        while (bits != 0) {
+            const int bit = __builtin_ctz(bits);
+            const int id = word * 32 + bit;
+            if (id < OUT_BASE) {
+                fired_ids.push_back(id);
+            }
+            bits &= bits - 1;
+        }
+    }
+}
+
+std::string join_ids(const std::vector<int>& ids) {
+    std::ostringstream out;
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (i != 0) out << ";";
+        out << ids[i];
+    }
+    return out.str();
+}
+
+void tick(EventTop& top, std::vector<int>* out_count = nullptr,
+          std::vector<int>* fired_ids = nullptr) {
     top.clk = 0;
     top.eval();
     top.clk = 1;
     top.eval();
     if (out_count != nullptr) {
         count_output_spikes(top, *out_count);
+    }
+    if (fired_ids != nullptr) {
+        collect_hidden_spikes(top, *fired_ids);
     }
 }
 
@@ -208,9 +235,10 @@ void inject_spike(EventTop& top, int neuron_id, std::vector<int>& out_count, int
 }
 
 void run_step(EventTop& top, std::vector<int>& out_count, int& cycles,
-              int max_cycles_per_image, int image_index) {
+              int max_cycles_per_image, int image_index,
+              std::vector<int>* fired_ids = nullptr) {
     top.start_step = 1;
-    tick(top, &out_count);
+    tick(top, &out_count, fired_ids);
     ++cycles;
     top.start_step = 0;
 
@@ -219,7 +247,7 @@ void run_step(EventTop& top, std::vector<int>& out_count, int& cycles,
             throw std::runtime_error("timeout waiting for step start on image " +
                                      std::to_string(image_index));
         }
-        tick(top, &out_count);
+        tick(top, &out_count, fired_ids);
     }
 
     while (top.step_busy) {
@@ -227,10 +255,10 @@ void run_step(EventTop& top, std::vector<int>& out_count, int& cycles,
             throw std::runtime_error("timeout while classifying image " +
                                      std::to_string(image_index));
         }
-        tick(top, &out_count);
+        tick(top, &out_count, fired_ids);
     }
 
-    tick(top, &out_count);
+    tick(top, &out_count, fired_ids);
     ++cycles;
 }
 
@@ -300,7 +328,9 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
         const uint32_t deliveries_before = top.router_deliveries;
         const uint32_t events_before = top.router_events;
         const uint32_t spikes_before = top.total_spikes_fired;
-        run_step(top, out_count, cycles, max_cycles_per_image, image_index);
+        std::vector<int> step_fired_ids;
+        std::vector<int>* fired_ptr = (trace_csv != nullptr) ? &step_fired_ids : nullptr;
+        run_step(top, out_count, cycles, max_cycles_per_image, image_index, fired_ptr);
 #ifdef EVENT_SCORE_READOUT
         if (trace_csv != nullptr) {
             const auto step_scores = read_output_scores(top, cycles);
@@ -308,7 +338,8 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
                        << "," << (top.active_cycles - active_before)
                        << "," << (top.router_deliveries - deliveries_before)
                        << "," << (top.router_events - events_before)
-                       << "," << (top.total_spikes_fired - spikes_before);
+                       << "," << (top.total_spikes_fired - spikes_before)
+                       << "," << join_ids(step_fired_ids);
             for (int value : step_scores) {
                 *trace_csv << "," << value;
             }
@@ -320,7 +351,8 @@ ClassificationResult classify(EventTop& top, const std::vector<std::string>& spi
                        << "," << (top.active_cycles - active_before)
                        << "," << (top.router_deliveries - deliveries_before)
                        << "," << (top.router_events - events_before)
-                       << "," << (top.total_spikes_fired - spikes_before);
+                       << "," << (top.total_spikes_fired - spikes_before)
+                       << "," << join_ids(step_fired_ids);
             for (int value : out_count) {
                 *trace_csv << "," << value;
             }
@@ -391,7 +423,7 @@ int main(int argc, char** argv) {
         std::ofstream* trace_ptr = nullptr;
         if (img == trace_image) {
             trace_csv.open("trace_event" + tag + "_img" + std::to_string(img) + ".csv");
-            trace_csv << "timestep,active_cycles,deliveries,router_events,spikes";
+            trace_csv << "timestep,active_cycles,deliveries,router_events,spikes,spike_ids";
             for (int o = 0; o < N_OUTPUT; ++o) {
                 trace_csv << ",score" << o;
             }
