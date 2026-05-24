@@ -69,8 +69,8 @@ module neuron_core #(
         // Leak: decay toward resting potential, never crossing zero from above
         if (membrane_r > MEMBRANE_WIDTH'(signed'(LEAK)))
             leaked = membrane_r - MEMBRANE_WIDTH'(signed'(LEAK));
-        else if (membrane_r > 0)
-            leaked = '0;
+        else if (membrane_r > MEMBRANE_WIDTH'(signed'(0)))
+            leaked = MEMBRANE_WIDTH'(signed'(0));
         else
             leaked = membrane_r;  // already at/below resting potential
 

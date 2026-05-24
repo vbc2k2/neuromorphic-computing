@@ -194,8 +194,8 @@ module top_event_ram2 #(
             leak_amount = MEMBRANE_WIDTH'(signed'(LEAK));
             if (value > leak_amount)
                 leak_value = value - leak_amount;
-            else if (value > '0)
-                leak_value = '0;
+            else if (value > MEMBRANE_WIDTH'(signed'(0)))
+                leak_value = MEMBRANE_WIDTH'(signed'(0));
             else
                 leak_value = value;
         end
