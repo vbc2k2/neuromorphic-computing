@@ -56,6 +56,8 @@ archive_tag() {
 
     cp -f "$SIM/metrics_classify_event${tag}.csv" "$out/" 2>/dev/null || true
     cp -f "$SIM/metrics_classify_ann${tag}.csv" "$out/" 2>/dev/null || true
+    cp -f "$SIM/classify_event${tag}.csv" "$out/" 2>/dev/null || true
+    cp -f "$SIM/snn_golden_predictions.csv" "$out/snn_golden_predictions${tag}.csv" 2>/dev/null || true
     cp -f "$SIM/snn_config${tag}.vh" "$out/" 2>/dev/null || true
     cp -f "$RESULTS"/yosys_*"${tag}"_*.log "$out/" 2>/dev/null || true
     cp -f "$LOGDIR"/*"${tag}"*.log "$out/" 2>/dev/null || true
@@ -81,7 +83,12 @@ validate_candidate() {
     echo "  T=$t_steps TOPK=$topk BIAS=$bias PRUNE=$prune READOUT=membrane"
     echo "=============================================================================="
 
-    if [ "$FORCE" = "1" ] || [ ! -s "$SIM/snn_config${tag}.vh" ]; then
+    local needs_rtl_inputs=0
+    if ! metric_exists event "$tag" || ! metric_exists ann "$tag"; then
+        needs_rtl_inputs=1
+    fi
+
+    if [ "$FORCE" = "1" ] || [ "$needs_rtl_inputs" = "1" ] || [ ! -s "$SIM/snn_config${tag}.vh" ]; then
         run_logged "export${tag}" \
             python3 tools/bench.py export nmnist \
                 --set "NMNIST_T_STEPS=$t_steps" \
@@ -91,7 +98,7 @@ validate_candidate() {
                 --set "NMNIST_READOUT=membrane" \
                 --set "NMNIST_PRUNE_MODE=$prune"
     else
-        echo "[skip] export snapshot exists: $SIM/snn_config${tag}.vh"
+        echo "[skip] export not needed for completed RTL metrics: $SIM/snn_config${tag}.vh"
     fi
 
     if ! metric_exists event "$tag"; then
@@ -107,6 +114,13 @@ validate_candidate() {
             python3 tools/bench.py run nmnist --design ann --tag "$tag"
     else
         echo "[skip] ANN metrics exist: $SIM/metrics_classify_ann${tag}.csv"
+    fi
+
+    if [ -s "$SIM/snn_golden_predictions.csv" ] && [ -s "$SIM/classify_event${tag}.csv" ]; then
+        run_logged "compare${tag}" \
+            python3 tools/compare_predictions.py --tag "$tag"
+    else
+        echo "[skip] prediction compare missing golden or RTL classify CSV"
     fi
 
     run_logged "summary${tag}" \

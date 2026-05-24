@@ -171,7 +171,7 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def snapshot(tag: str, out_dir: Path) -> None:
     dest = out_dir / tag
     dest.mkdir(parents=True, exist_ok=True)
-    for name in ["snn_config.vh", "export_nmnist_metrics.json"]:
+    for name in ["snn_config.vh", "export_nmnist_metrics.json", "snn_golden_predictions.csv"]:
         src = SIM / name
         if src.exists():
             shutil.copy2(src, dest / name)

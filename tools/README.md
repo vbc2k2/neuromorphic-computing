@@ -82,6 +82,13 @@ python3 tools/report.py --tag _nmnist_t50_k128_bram --event-design event_ram
 python3 tools/report.py --tag _nmnist_t50_k128_bram --event-design event_ram --format md
 ```
 
+Compare the exported Python SNN golden predictions against a tagged RTL event
+run:
+
+```bash
+python3 tools/compare_predictions.py --tag _nmnist_t50_k128_saliency_mem
+```
+
 The Yosys wrapper uses the frozen `sim/snn_config<tag>.vh` snapshot when it
 exists, runs from `sim/` so `$readmemh` files resolve correctly, and applies the
 same parameters used by the Verilator benchmark.

@@ -467,7 +467,9 @@ def precompute_hidden_input(spikes: np.ndarray, w1q: np.ndarray,
 
 def simulate_snn_hin(hin: np.ndarray, labels: np.ndarray,
                      w2q: np.ndarray, b2_spike: np.ndarray,
-                     threshold: int, return_stats: bool = False):
+                     threshold: int, return_stats: bool = False,
+                     return_predictions: bool = False,
+                     return_scores: bool = False):
     num = hin.shape[0]
     mem_h = np.zeros((num, N_HIDDEN), dtype=np.int32)
     mem_o = np.zeros((num, N_OUTPUT), dtype=np.int32)
@@ -499,15 +501,23 @@ def simulate_snn_hin(hin: np.ndarray, labels: np.ndarray,
         hidden_spikes += int(hidden.sum())
         hidden_prev = hidden.astype(np.int32)
 
-    pred = np.argmax(out_count if READOUT == "spike" else mem_o, axis=1)
+    scores = out_count if READOUT == "spike" else mem_o
+    pred = np.argmax(scores, axis=1)
     acc = float((pred == labels).mean())
-    if not return_stats:
+    if not return_stats and not return_predictions and not return_scores:
         return acc
-    return acc, {
-        "hidden_spikes": hidden_spikes,
-        "hidden_deliveries": hidden_deliveries,
-        "output_spikes": output_spikes,
-    }
+    result = [acc]
+    if return_stats:
+        result.append({
+            "hidden_spikes": hidden_spikes,
+            "hidden_deliveries": hidden_deliveries,
+            "output_spikes": output_spikes,
+        })
+    if return_predictions:
+        result.append(pred.astype(np.int32))
+    if return_scores:
+        result.append(scores.astype(np.int32))
+    return tuple(result)
 
 
 def build_csr(w1q: np.ndarray, w2q: np.ndarray,
@@ -570,11 +580,31 @@ def write_export_metrics(sim_dir: str, metrics: dict):
         json.dump(metrics, f, indent=2, sort_keys=True)
 
 
+def write_golden_predictions(sim_dir: str, labels: np.ndarray,
+                             predictions: np.ndarray,
+                             scores: np.ndarray | None = None):
+    n = min(len(labels), len(predictions))
+    score_cols = scores is not None and len(scores) >= n
+    with open(os.path.join(sim_dir, "snn_golden_predictions.csv"), "w") as f:
+        header = "image,label,prediction,correct"
+        if score_cols:
+            header += "," + ",".join(f"score{i}" for i in range(N_OUTPUT))
+        f.write(header + "\n")
+        for i in range(n):
+            pred = int(predictions[i])
+            row = [str(i), str(int(labels[i])), str(pred), str(int(pred == int(labels[i])))]
+            if score_cols:
+                row.extend(str(int(v)) for v in scores[i, :N_OUTPUT])
+            f.write(",".join(row) + "\n")
+
+
 def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
            counts: np.ndarray, w1q: np.ndarray, w2q: np.ndarray,
            b1_spike: np.ndarray, b2_spike: np.ndarray,
            b1_ann: np.ndarray, b2_ann: np.ndarray,
-           threshold: int, hidden_shift: int):
+           threshold: int, hidden_shift: int,
+           golden_predictions: np.ndarray | None = None,
+           golden_scores: np.ndarray | None = None):
     os.makedirs(sim_dir, exist_ok=True)
     csr_dst, csr_weight, src_start, src_count = build_csr(w1q, w2q, b1_spike, b2_spike)
 
@@ -592,6 +622,9 @@ def export(sim_dir: str, spikes: np.ndarray, labels: np.ndarray,
     with open(os.path.join(sim_dir, "snn_labels.mem"), "w") as f:
         for lab in labels:
             f.write(f"{int(lab)}\n")
+
+    if golden_predictions is not None:
+        write_golden_predictions(sim_dir, labels, golden_predictions, golden_scores)
 
     write_hex(os.path.join(sim_dir, "ann_pixels.mem"),
               np.minimum(counts, 255).astype(np.uint8).flatten(), 2)
@@ -694,8 +727,9 @@ def main():
         score = threshold_score(acc, total_deliveries, tune_n)
         if score > best_score or (score == best_score and acc > best_acc):
             best_score, best_acc, best_ops, best_thr = score, acc, total_deliveries, thr
-    snn_acc, snn_stats = simulate_snn_hin(
-        eval_hin, test_labels[:eval_n], w2q, b2_spike, best_thr, return_stats=True)
+    snn_acc, snn_stats, snn_pred, snn_scores = simulate_snn_hin(
+        eval_hin, test_labels[:eval_n], w2q, b2_spike, best_thr,
+        return_stats=True, return_predictions=True, return_scores=True)
     eval_input_deliveries = estimate_input_deliveries(
         test_spikes[:eval_n], w1q, b1_spike, b2_spike)
     eval_deliveries = eval_input_deliveries + int(snn_stats["hidden_deliveries"])
@@ -704,7 +738,7 @@ def main():
     sim_dir = os.path.abspath(os.path.join(script_dir, "..", "sim"))
     n_syn = export(sim_dir, test_spikes, test_labels, test_counts,
                    w1q, w2q, b1_spike, b2_spike, b1_ann, b2_ann,
-                   best_thr, hidden_shift)
+                   best_thr, hidden_shift, snn_pred, snn_scores)
 
     avg_events = float(test_spikes.sum()) / max(len(test_labels), 1)
     metrics = {
@@ -777,6 +811,7 @@ def main():
     print(f"  average binned input events/sample: {avg_events:.2f}")
     print(f"  dense ANN MACs/sample: {N_INPUT * N_HIDDEN + N_HIDDEN * N_OUTPUT}")
     print(f"  export metrics: {os.path.join(sim_dir, 'export_nmnist_metrics.json')}")
+    print(f"  golden predictions: {os.path.join(sim_dir, 'snn_golden_predictions.csv')}")
     print(f"  exported to: {sim_dir}")
     print("=" * 64)
 
