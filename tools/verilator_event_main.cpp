@@ -277,8 +277,13 @@ std::vector<int> read_output_scores(EventTop& top, int& cycles) {
 }
 #endif
 
-int classify(EventTop& top, const std::vector<std::string>& spike_words, int image_index,
-             int max_cycles_per_image) {
+struct ClassificationResult {
+    int prediction = 0;
+    std::vector<int> scores;
+};
+
+ClassificationResult classify(EventTop& top, const std::vector<std::string>& spike_words, int image_index,
+                              int max_cycles_per_image) {
     reset(top);
     std::vector<int> out_count(N_OUTPUT, 0);
     int cycles = 0;
@@ -297,9 +302,9 @@ int classify(EventTop& top, const std::vector<std::string>& spike_words, int ima
     tick(top);
 #ifdef EVENT_SCORE_READOUT
     const auto scores = read_output_scores(top, cycles);
-    return argmax_first(scores);
+    return {argmax_first(scores), scores};
 #else
-    return argmax_first(out_count);
+    return {argmax_first(out_count), out_count};
 #endif
 }
 
@@ -326,7 +331,11 @@ int main(int argc, char** argv) {
     }
 
     std::ofstream classify_csv("classify_event" + tag + ".csv");
-    classify_csv << "image,label,prediction,correct,active_cycles,deliveries,spikes\n";
+    classify_csv << "image,label,prediction,correct,active_cycles,deliveries,spikes";
+    for (int o = 0; o < N_OUTPUT; ++o) {
+        classify_csv << ",score" << o;
+    }
+    classify_csv << "\n";
 
     EventTop top;
     reset(top);
@@ -347,7 +356,8 @@ int main(int argc, char** argv) {
     const int progress_interval = std::max(1, nrun / 20);
 
     for (int img = first; img <= last; ++img) {
-        const int pred = classify(top, spike_words, img, max_cycles);
+        const auto result = classify(top, spike_words, img, max_cycles);
+        const int pred = result.prediction;
         const int ok = (pred == labels[img]) ? 1 : 0;
         correct += ok;
         total_active += static_cast<long long>(top.active_cycles);
@@ -356,7 +366,11 @@ int main(int argc, char** argv) {
         total_spikes += static_cast<long long>(top.total_spikes_fired);
         classify_csv << img << "," << labels[img] << "," << pred << "," << ok
                      << "," << top.active_cycles << "," << top.router_deliveries
-                     << "," << top.total_spikes_fired << "\n";
+                     << "," << top.total_spikes_fired;
+        for (int o = 0; o < N_OUTPUT; ++o) {
+            classify_csv << "," << result.scores[o];
+        }
+        classify_csv << "\n";
         if (img - first < 12) {
             std::cout << "  image " << img << ": label=" << labels[img]
                       << " predict=" << pred << (ok ? "  OK" : "  x") << "\n";
